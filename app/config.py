@@ -38,6 +38,9 @@ class Settings:
     dev_user_email: str = os.getenv("DEV_USER_EMAIL", "dev@localhost")
     dev_user_name: str = os.getenv("DEV_USER_NAME", "Dev User")
 
+    # When the PreSync Job owns schema creation, set INIT_DB_ON_START=false so
+    # concurrent replicas never race to create tables.
+    init_db_on_start: bool = _bool("INIT_DB_ON_START", True)
     seed_on_start: bool = _bool("SEED_ON_START", True)
     seed_file: str = os.getenv("SEED_FILE", "seed/conferences.json")
 

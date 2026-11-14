@@ -147,3 +147,14 @@ def test_duplicate_venue_is_rejected(client):
 def test_healthz(client):
     assert client.get("/healthz").json()["status"] == "ok"
     assert client.get("/api/healthz").json()["status"] == "ok"
+
+
+def test_initdb_entrypoint_is_idempotent(tmp_path, monkeypatch):
+    """The PreSync Job's entrypoint must be safe to re-run on every sync."""
+    import importlib
+
+    from app import initdb
+
+    assert initdb.main() == 0
+    assert initdb.main() == 0
+    importlib.reload(initdb)

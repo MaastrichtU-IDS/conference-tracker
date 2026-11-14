@@ -28,12 +28,15 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    Base.metadata.create_all(engine)
-    if settings.seed_on_start:
-        with SessionLocal() as db:
-            created = seed_if_empty(db, settings.seed_file)
-            if created:
-                log.info("database seeded with %d conferences", created)
+    if settings.init_db_on_start:
+        Base.metadata.create_all(engine)
+        if settings.seed_on_start:
+            with SessionLocal() as db:
+                created = seed_if_empty(db, settings.seed_file)
+                if created:
+                    log.info("database seeded with %d conferences", created)
+    else:
+        log.info("INIT_DB_ON_START=false — expecting the migration job to have run")
     if not settings.auth_enabled:
         log.warning("OIDC is not configured — running in single-user dev mode")
     yield

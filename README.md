@@ -45,7 +45,10 @@ pytest -q
 | `OIDC_SCOPES` | `openid email profile` | Requested scopes. |
 | `ALLOWED_EMAIL_DOMAINS` | *(empty = any)* | Comma-separated domains permitted to sign in. |
 | `ADMIN_EMAILS` | *(empty)* | Comma-separated accounts that may edit conferences and milestones. |
+| `INIT_DB_ON_START` | `true` | Create the schema at boot. Set `false` where a migration job owns it. |
 | `SEED_ON_START` | `true` | Load `seed/conferences.json` when the database is empty. |
+| `OTEL_SDK_DISABLED` | `true` | Tracing on/off. The image always runs under `opentelemetry-instrument`; flip this to `false` to export. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | Collector endpoint when tracing is on. |
 
 Register `BASE_URL/auth/callback` as the redirect URI with your identity provider.
 
@@ -58,6 +61,21 @@ feed is built from.
 
 The seed loader only runs when the `conferences` table is empty, so it is safe
 on every boot and will not overwrite edits made in the app.
+
+## Schema and seeding
+
+`app/initdb.py` creates the schema and loads the seed, then exits — run it as a
+pre-deploy job (`python -m app.initdb`) and set `INIT_DB_ON_START=false` on the
+app so replicas never race to create tables. Both steps are idempotent, so the
+job is safe to re-run on every sync. Left at the defaults, the app does this
+itself at startup, which is what `docker compose up` relies on.
+
+## Tracing
+
+The image runs under `opentelemetry-instrument` with `OTEL_SDK_DISABLED=true`
+baked in, so there is no overhead by default and no rebuild is needed to turn
+tracing on — set `OTEL_SDK_DISABLED=false` and point
+`OTEL_EXPORTER_OTLP_ENDPOINT` at a collector.
 
 ## Calendar feeds
 
