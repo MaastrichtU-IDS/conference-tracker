@@ -1,0 +1,24 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: conference-tracker
+  namespace: conference-tracker
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-body-size: 2m
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [conferences.ids.maastrichtuniversity.nl]
+      secretName: conference-tracker-tls
+  rules:
+    - host: conferences.ids.maastrichtuniversity.nl
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: conference-tracker
+                port:
+                  name: http

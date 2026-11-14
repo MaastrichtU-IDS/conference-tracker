@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: conference-tracker
+  namespace: conference-tracker
+data:
+  APP_NAME: "IDS Conference Tracker"
+  BASE_URL: "https://conferences.ids.maastrichtuniversity.nl"
+  OIDC_ISSUER: "https://login.maastrichtuniversity.nl/realms/ids"
+  OIDC_CLIENT_ID: "conference-tracker"
+  OIDC_SCOPES: "openid email profile"
+  ALLOWED_EMAIL_DOMAINS: "maastrichtuniversity.nl"
+  ADMIN_EMAILS: "michel.dumontier@maastrichtuniversity.nl"
+  SEED_ON_START: "true"

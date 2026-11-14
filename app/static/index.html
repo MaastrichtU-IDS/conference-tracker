@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Conference Tracker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<div class="wrap" id="root" hidden>
+<header class="top">
+  <div class="topbar">
+    <div>
+      <h1 id="apptitle">Conference Tracker</h1>
+      <div class="sub">Deadlines, events and submission ideas &middot; Institute of Data Science, Maastricht University</div>
+    </div>
+    <div class="who" id="who"></div>
+  </div>
+
+  <div class="filterbar">
+    <div class="frow">
+      <input type="text" class="search" id="gsearch" placeholder="Search venue, milestone, topic, idea…">
+      <button class="chip on" data-t="future">Future</button>
+      <button class="chip" data-t="past">Past</button>
+      <button class="chip star" id="starchip">&#9733; Starred only</button>
+      <span class="filtersum" id="filtersum"></span><span id="starwarn"></span>
+    </div>
+    <div class="frow"><span class="lead">Conference</span><span id="venuechips" style="display:flex;gap:6px;flex-wrap:wrap;flex:1"></span></div>
+    <div class="frow"><span class="lead">Milestone</span><span id="kindchips" style="display:flex;gap:6px;flex-wrap:wrap;flex:1"></span></div>
+  </div>
+
+  <nav class="tabs">
+    <button class="tab on" data-v="deadlines">Deadlines</button>
+    <button class="tab" data-v="confs">Conferences</button>
+    <button class="tab" data-v="timeline">Timeline</button>
+    <button class="tab" data-v="map">Map</button>
+    <button class="tab" data-v="subs">Submissions <span id="subcount" class="badge"></span></button>
+    <button class="tab" data-v="calendar">Calendar</button>
+    <button class="tab hidden" data-v="admin" id="admintab">Admin</button>
+  </nav>
+</header>
+
+<section class="view on" id="v-deadlines">
+  <div id="starsec"></div>
+  <h2 class="sectionhead">Milestones <span id="mscount" style="color:var(--text-3);font-weight:600"></span></h2>
+  <div class="panel" style="padding:4px 0"><div id="mstable"></div></div>
+</section>
+
+<section class="view" id="v-confs">
+  <div class="toolbar">
+    <span class="sub" style="margin:0" id="ccount"></span>
+    <div style="flex:1"></div>
+    <select id="csort">
+      <option value="paper">Sort: paper deadline</option>
+      <option value="event">Sort: event date</option>
+      <option value="venue">Sort: venue A–Z</option>
+    </select>
+  </div>
+  <div class="grid" id="cgrid"></div>
+</section>
+
+<section class="view" id="v-timeline">
+  <div class="toolbar"><div class="sub" style="margin:0">Diamonds mark milestones (coloured by kind), bars mark the event. Dashed line is today. The Future/Past filter does not apply here — the whole span is shown.</div></div>
+  <div class="tlwrap"><div class="tl" id="tl"></div></div>
+  <div class="legend" id="tllegend"></div>
+</section>
+
+<section class="view" id="v-map">
+  <div class="toolbar"><div class="sub" style="margin:0">Numbered by event date. Click a marker or a row to filter everything to that conference.</div></div>
+  <div class="maplayout">
+    <div class="mapbox" id="mapbox"></div>
+    <div><div class="sitelist" id="sitelist"></div><div class="unloc" id="unloc"></div></div>
+  </div>
+</section>
+
+<section class="view" id="v-subs">
+  <div class="toolbar">
+    <span class="sub" style="margin:0" id="scount"></span>
+    <div style="flex:1"></div>
+    <button class="btn" id="addbtn">+ Register an idea</button>
+  </div>
+  <div id="dbnotice"></div>
+  <div class="cols" id="scols"></div>
+</section>
+
+<section class="view" id="v-calendar">
+  <div class="feedbox">
+    <h3>Your starred items, as a calendar subscription</h3>
+    <p>Add this URL to Outlook or Google Calendar and your starred conferences and deadlines stay in sync — the feed refreshes on its own. The URL is a secret: anyone who has it can read your starred list, so share it only with your own calendar.</p>
+    <div class="feedurl">
+      <code id="feedurl">—</code>
+      <button class="btn ghost sm" id="copyfeed">Copy</button>
+      <button class="btn ghost sm" id="rotatefeed">Rotate URL</button>
+    </div>
+  </div>
+  <div class="feedbox">
+    <h3>Everything, as one public calendar</h3>
+    <p>All conferences and every dated milestone in the tracker, with no personalisation and no token.</p>
+    <div class="feedurl">
+      <code id="allfeedurl">—</code>
+      <button class="btn ghost sm" id="copyall">Copy</button>
+      <a class="btn ghost sm" href="/feeds/all.ics">Download</a>
+    </div>
+  </div>
+  <div class="feedbox">
+    <h3>How to subscribe</h3>
+    <p><b>Outlook on the web:</b> Calendar → Add calendar → Subscribe from web → paste the URL.<br>
+       <b>Outlook desktop:</b> Account Settings → Internet Calendars → New.<br>
+       <b>Google Calendar:</b> Other calendars → + → From URL → paste the URL.<br>
+       Entries are all-day and marked free, so they never block your availability.</p>
+  </div>
+</section>
+
+<section class="view" id="v-admin">
+  <div class="adminbar">
+    <b>Conferences and milestones</b>
+    <span>Edits are saved immediately and seen by everyone.</span>
+    <div style="flex:1"></div>
+    <button class="btn sm" id="newconf">+ New conference</button>
+  </div>
+  <div id="adminlist"></div>
+</section>
+</div>
+
+<div class="signin hidden" id="signin">
+  <h2>Conference Tracker</h2>
+  <p>Sign in with your institutional account to see deadlines, register submission ideas and keep your own starred calendar.</p>
+  <a class="btn" href="/auth/login">Sign in</a>
+</div>
+
+<div class="scrim" id="scrim">
+  <div class="modal">
+    <h2 id="mtitle">Register an idea</h2>
+    <div class="mform">
+      <div class="fld"><label>Working title</label><input type="text" id="f-title" placeholder="e.g. Ontology-guided retrieval for clinical KGs"></div>
+      <div class="two">
+        <div class="fld"><label>Target venue</label><select id="f-venue"></select></div>
+        <div class="fld"><label>Track</label><input type="text" id="f-track" placeholder="Research / Resources / Workshop…"></div>
+      </div>
+      <div class="two">
+        <div class="fld"><label>Lead author</label><input type="text" id="f-lead" placeholder="Who is driving this"></div>
+        <div class="fld"><label>Status</label><select id="f-status"></select></div>
+      </div>
+      <div class="two">
+        <div class="fld"><label>Co-authors</label><input type="text" id="f-coauthors" placeholder="Comma separated"></div>
+        <div class="fld"><label>Related project</label><input type="text" id="f-project" list="projlist" placeholder="SULO, AIDAVA, GLIOTWIN…"><datalist id="projlist"></datalist></div>
+      </div>
+      <div class="fld"><label>Abstract / short pitch</label><textarea id="f-abstract" placeholder="A few sentences: the claim, the evidence, why this venue."></textarea></div>
+      <div class="fld"><label>Links</label><div id="f-links"></div><button class="btn ghost sm" id="addlink" type="button">+ Add link</button><div class="hint">Repo, Overleaf, draft PDF, data…</div></div>
+      <div class="fld"><label>Notes</label><textarea id="f-notes" style="min-height:52px" placeholder="Open questions, blockers, who to ask."></textarea></div>
+    </div>
+    <div class="mfoot">
+      <button class="btn" id="savebtn">Save</button>
+      <button class="btn ghost" id="cancelbtn">Cancel</button>
+      <div style="flex:1"></div>
+      <span id="meta" style="font-size:11px;color:var(--text-3)"></span>
+      <button class="btn danger sm hidden" id="delbtn">Delete</button>
+    </div>
+  </div>
+</div>
+
+<div class="flash" id="flash"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

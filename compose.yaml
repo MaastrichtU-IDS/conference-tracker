@@ -1,0 +1,35 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: tracker
+      POSTGRES_PASSWORD: tracker
+      POSTGRES_DB: tracker
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tracker -d tracker"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://tracker:tracker@db:5432/tracker
+      BASE_URL: http://localhost:8000
+      SECRET_KEY: dev-insecure-change-me
+      # Leave OIDC_* unset to run in single-user dev mode.
+      # OIDC_ISSUER: https://login.example.org/realms/ids
+      # OIDC_CLIENT_ID: conference-tracker
+      # OIDC_CLIENT_SECRET: ...
+      # ALLOWED_EMAIL_DOMAINS: maastrichtuniversity.nl
+      # ADMIN_EMAILS: michel.dumontier@maastrichtuniversity.nl
+    ports:
+      - "8000:8000"
+
+volumes:
+  pgdata:

@@ -1,0 +1,84 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: conference-tracker
+  namespace: conference-tracker
+  labels:
+    app.kubernetes.io/name: conference-tracker
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: conference-tracker
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: conference-tracker
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: app
+          image: ghcr.io/maastrichtu-ids/conference-tracker:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: conference-tracker
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: conference-tracker, key: POSTGRES_PASSWORD }
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef: { name: conference-tracker, key: SECRET_KEY }
+            - name: OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: { name: conference-tracker, key: OIDC_CLIENT_SECRET }
+            - name: DATABASE_URL
+              value: postgresql+psycopg://tracker:$(POSTGRES_PASSWORD)@conference-tracker-db:5432/tracker
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 50m, memory: 192Mi }
+            limits:   { cpu: "1",  memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: conference-tracker
+  namespace: conference-tracker
+spec:
+  selector:
+    app.kubernetes.io/name: conference-tracker
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
