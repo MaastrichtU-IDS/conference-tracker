@@ -7,7 +7,7 @@ Self-hosted successor to the Claude artifact prototype.
 - **Conferences** — one card per venue with headline dates, scope and fit notes.
 - **Timeline** — Gantt view across Jul 2026 – Dec 2027.
 - **Map** — world map of event locations, clickable to filter.
-- **Submissions** — a shared board where the group registers ideas and tracks them from Idea to Accepted. Registered ideas surface inline on the deadline rows they are relevant to.
+- **Submissions** — a shared board where the group registers ideas and tracks them from Idea to Accepted. Registered ideas surface inline on the deadline rows they are relevant to. Members only: with sign-in enabled, the API never returns submissions to an anonymous caller. Conferences and milestones stay public, as they are in `/feeds/all.ics`.
 - **Calendar** — a per-person subscribable `.ics` feed of starred items, plus one public feed of everything.
 - **Admin** — in-app editing of conferences and milestones for designated accounts.
 

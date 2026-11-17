@@ -58,6 +58,18 @@ def _sub_out(s: Submission) -> SubmissionOut:
     )
 
 
+def _all_submissions(db: Session):
+    return db.scalars(
+        select(Submission)
+        .options(
+            selectinload(Submission.conference),
+            selectinload(Submission.created_by),
+            selectinload(Submission.updated_by),
+        )
+        .order_by(Submission.updated_at.desc())
+    ).all()
+
+
 def _me_out(user: User | None, settings: Settings) -> MeOut:
     if user is None:
         return MeOut(authenticated=False, auth_enabled=settings.auth_enabled)
@@ -86,23 +98,20 @@ def bootstrap(
     user: User | None = Depends(current_user),
     settings: Settings = Depends(get_settings),
 ) -> BootstrapOut:
-    """Everything the frontend needs for a first paint, in one round trip."""
+    """Everything the frontend needs for a first paint, in one round trip.
+
+    Conferences and milestones are public deadlines. Submissions are members-only:
+    an anonymous caller gets an empty list.
+    """
     confs = db.scalars(select(Conference).order_by(Conference.venue)).all()
     mss = db.scalars(
         select(Milestone).options(selectinload(Milestone.conference)).order_by(Milestone.date)
     ).all()
-    subs = db.scalars(
-        select(Submission)
-        .options(
-            selectinload(Submission.conference),
-            selectinload(Submission.created_by),
-            selectinload(Submission.updated_by),
-        )
-        .order_by(Submission.updated_at.desc())
-    ).all()
 
+    subs: list[Submission] = []
     stars: dict[str, list[str]] = {"conference": [], "milestone": []}
     if user is not None:
+        subs = list(_all_submissions(db))
         for s in db.scalars(select(Star).where(Star.user_id == user.id)):
             stars.setdefault(s.kind, []).append(s.target_id)
 
@@ -117,20 +126,13 @@ def bootstrap(
 
 
 # --------------------------------------------------------------------------
-# Submissions — any signed-in user may add and edit.
+# Submissions — members only: any signed-in user may read, add and edit.
 # --------------------------------------------------------------------------
 @router.get("/submissions", response_model=list[SubmissionOut])
-def list_submissions(db: Session = Depends(get_db)) -> list[SubmissionOut]:
-    rows = db.scalars(
-        select(Submission)
-        .options(
-            selectinload(Submission.conference),
-            selectinload(Submission.created_by),
-            selectinload(Submission.updated_by),
-        )
-        .order_by(Submission.updated_at.desc())
-    ).all()
-    return [_sub_out(s) for s in rows]
+def list_submissions(
+    db: Session = Depends(get_db), _: User = Depends(require_user)
+) -> list[SubmissionOut]:
+    return [_sub_out(s) for s in _all_submissions(db)]
 
 
 @router.post("/submissions", response_model=SubmissionOut, status_code=status.HTTP_201_CREATED)
