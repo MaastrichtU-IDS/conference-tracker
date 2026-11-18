@@ -1,7 +1,13 @@
 # syntax=docker/dockerfile:1
 FROM python:3.12-slim AS base
 
+# OTEL_PYTHON_DISABLED_INSTRUMENTATIONS=click: opentelemetry-bootstrap installs the
+# click instrumentation because uvicorn's CLI is a click command. It wraps the whole
+# server process in one `uvicorn` span, so every request became an INTERNAL child of
+# a days-long trace instead of a SERVER root, and SigNoz's Services list (built from
+# server/top-level spans) never showed the app.
 ENV OTEL_SDK_DISABLED=true \
+    OTEL_PYTHON_DISABLED_INSTRUMENTATIONS=click \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
