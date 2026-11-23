@@ -5,7 +5,13 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from app.editions import aoe_today, current_edition, has_open_deadline, milestone_kind
+from app.editions import (
+    aoe_today,
+    current_edition,
+    edition_state,
+    has_open_deadline,
+    milestone_kind,
+)
 
 D = dt.date
 
@@ -105,6 +111,20 @@ def test_nothing_announced_shows_the_latest_edition_not_open():
 
 def test_no_editions():
     assert current_edition([], today=D(2027, 1, 5)) == (None, False)
+
+
+# --- state of the shown edition ---------------------------------------------------
+
+
+def test_state_open_closed_awaiting():
+    today = D(2027, 1, 5)
+    assert edition_state(ed(2027, paper=D(2027, 2, 1)), today) == "open"
+    assert edition_state(ed(2027, paper=D(2026, 12, 10)), today) == "closed"
+    # Only event dates or notifications known: the CFP is still to come.
+    only_event = ed(2027, milestones=[ms(D(2027, 9, 1), "Conference", "Event")])
+    assert edition_state(only_event, today) == "awaiting"
+    assert edition_state(ed(2028), today) == "awaiting"
+    assert edition_state(None, today) == "awaiting"
 
 
 # --- AoE ------------------------------------------------------------------------

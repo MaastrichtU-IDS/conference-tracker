@@ -46,6 +46,9 @@ class SeriesOut(SeriesIn):
     current_edition_id: str | None = None
     current_year: int | None = None
     open: bool = False
+    # "open" | "closed" (deadlines passed, next edition not in the tracker yet)
+    # | "awaiting" (no submission deadline known yet)
+    state: str = "awaiting"
 
 
 class EditionIn(BaseModel):

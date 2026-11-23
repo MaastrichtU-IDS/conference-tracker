@@ -78,10 +78,13 @@ personal calendar feed is built from.
 submission deadline (abstract, paper or proposal) still ahead, in AoE; when none
 is open, the latest edition, flagged as not open. So searching for ESWC lands on
 ESWC 2027 until its last deadline passes, then on ESWC 2028 once that exists.
+Each series also reports a `state` for that edition: `open`, `closed` (deadlines
+passed, next edition not added yet) or `awaiting` (no deadline published yet) —
+the last two are what needs updating.
 
 | Read (public) | |
 | --- | --- |
-| `GET /api/series?q=eswc` | series matching an acronym or name (exact acronym first), each with `current_edition_id`, `current_year` and `open` |
+| `GET /api/series?q=eswc` | series matching an acronym or name (exact acronym first), each with `current_edition_id`, `current_year`, `open` and `state` |
 | `GET /api/series/{id or acronym}` | one series with every edition and its milestones |
 
 | Write (admins) | |

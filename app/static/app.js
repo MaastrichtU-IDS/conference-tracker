@@ -225,7 +225,6 @@ function renderDeadlines() {
 /* ---------- conferences (one card per series) ---------- */
 let cSort = "paper";
 const shownEdition = s => CONF_BY_ID.get(SEL.get(s.id) || s.current_edition_id);
-const hasDates = c => DATE_FIELDS.some(([f]) => c[f]) || MSR.some(m => m.conference_id === c.id);
 /* "future": every series, at its next edition (or the year picked on its card).
    "past": every edition with nothing left ahead, one card each. */
 function confsFiltered() {
@@ -242,10 +241,10 @@ function confsFiltered() {
     && qMatch(`${c.label} ${s.name} ${c.location || ""} ${s.emphasis || ""} ${s.fit || ""}`));
 }
 function editionNotice(s, c) {
-  if (F.time !== "future" || s.open || c.id !== s.current_edition_id) return "";
-  const msg = hasDates(c)
-    ? `Submissions for ${esc(c.label)} have closed; the next edition isn't announced yet.`
-    : `Dates for ${esc(c.label)} aren't announced yet.`;
+  if (F.time !== "future" || s.state === "open" || c.id !== s.current_edition_id) return "";
+  const msg = s.state === "closed"
+    ? `Submissions for ${esc(c.label)} have closed; the next edition isn't in the tracker yet.`
+    : `Submission deadlines for ${esc(c.label)} aren't announced yet.`;
   return `<div class="notice">${msg}</div>`;
 }
 function yearChips(s, c) {

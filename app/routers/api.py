@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, selectinload
 from ..auth import current_user, require_admin, require_user
 from ..config import Settings, get_settings
 from ..db import get_db
-from ..editions import aoe_today, current_edition
+from ..editions import aoe_today, current_edition, edition_state
 from ..models import Conference, Milestone, Series, Star, Submission, User
 from ..schemas import (
     BootstrapOut,
@@ -60,6 +60,7 @@ def _series_out(s: Series, today: dt.date, cls=SeriesOut):
         current_edition_id=shown.id if shown else None,
         current_year=shown.year if shown else None,
         open=is_open,
+        state=edition_state(shown, today),
     )
 
 

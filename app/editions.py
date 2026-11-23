@@ -5,8 +5,13 @@ series should land on the edition you can still submit to:
 
 1. the earliest edition with a submission deadline (abstract, paper or
    proposal) still ahead, counted in AoE (UTC-12);
-2. otherwise the latest edition, flagged "not open": its deadlines have passed
-   (or it has no dates yet) and no later edition is open.
+2. otherwise the latest edition, flagged "not open".
+
+The shown edition's state says what, if anything, is missing:
+- "open": a submission deadline is still ahead;
+- "closed": it had submission deadlines and all have passed; the next
+  edition is not in the tracker yet;
+- "awaiting": no submission deadline is known for it yet (CFP pending).
 
 `milestone_kind` mirrors kindOf() in app/static/app.js so the server and the UI
 agree on what counts as a submission deadline.
@@ -63,14 +68,26 @@ def milestone_kind(m: Any) -> str:
     return "admin"
 
 
+def _submission_dates(edition: Any) -> list[dt.date]:
+    dates = [d for d in (edition.abstract_date, edition.paper_date) if d is not None]
+    dates += [
+        m.end_date or m.date for m in edition.milestones if milestone_kind(m) in SUBMISSION_KINDS
+    ]
+    return dates
+
+
 def has_open_deadline(edition: Any, today: dt.date) -> bool:
-    for d in (edition.abstract_date, edition.paper_date):
-        if d is not None and d >= today:
-            return True
-    for m in edition.milestones:
-        if milestone_kind(m) in SUBMISSION_KINDS and (m.end_date or m.date) >= today:
-            return True
-    return False
+    return any(d >= today for d in _submission_dates(edition))
+
+
+def edition_state(edition: Any | None, today: dt.date) -> str:
+    """ "open", "closed" (deadlines all passed) or "awaiting" (none known yet)."""
+    if edition is None:
+        return "awaiting"
+    dates = _submission_dates(edition)
+    if not dates:
+        return "awaiting"
+    return "open" if max(dates) >= today else "closed"
 
 
 def current_edition(editions: Iterable[Any], today: dt.date) -> tuple[Any | None, bool]:
