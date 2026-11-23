@@ -6,14 +6,15 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from .auth import router as auth_router
 from .config import get_settings
 from .db import SessionLocal, engine
+from .editing import EditError
 from .migrate import migrate
 from .routers.api import router as api_router
 from .routers.feeds import router as feeds_router
@@ -50,6 +51,14 @@ app.add_middleware(
     https_only=settings.base_url.startswith("https://"),
     same_site="lax",
 )
+
+
+@app.exception_handler(EditError)
+async def edit_error(_: Request, exc: EditError) -> JSONResponse:
+    """Refusals from app/editing.py (no such record, a clash, a stale undo)."""
+    return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+
+
 app.include_router(api_router)
 app.include_router(feeds_router)
 app.include_router(auth_router)

@@ -1,13 +1,20 @@
-"""OIDC sign-in, session handling and the current-user dependencies.
+"""OIDC sign-in, session handling, API tokens and the current-user dependencies.
 
 With OIDC configured, users sign in at /auth/login and a signed session cookie
 carries their user id. Without it (local development, tests) the app runs in
 single-user dev mode and every request is the same synthetic user.
+
+A request carrying `Authorization: Bearer <token>` is instead that token's
+owner, with the owner's rights, whatever the mode. A bad, expired or revoked
+token is a 401, never a quiet fall-back to anonymous or to the dev user.
 """
 
 from __future__ import annotations
 
+import datetime as dt
+import hashlib
 import logging
+import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
@@ -16,7 +23,7 @@ from sqlalchemy.orm import Session
 
 from .config import Settings, get_settings
 from .db import get_db
-from .models import User
+from .models import ApiToken, User
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -99,12 +106,66 @@ def admit(db: Session, settings: Settings, claims: dict) -> User:
     return user
 
 
+TOKEN_PREFIX = "ct_"
+_TOUCH_EVERY = dt.timedelta(minutes=5)
+
+
+def new_token() -> str:
+    return TOKEN_PREFIX + secrets.token_urlsafe(32)
+
+
+def hash_token(token: str) -> str:
+    # Tokens are 256 random bits, so a fast hash is enough: there is nothing to brute-force.
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def aware(value: dt.datetime | None) -> dt.datetime | None:
+    """SQLite hands back naive datetimes; everything stored is UTC."""
+    if value is None or value.tzinfo is not None:
+        return value
+    return value.replace(tzinfo=dt.UTC)
+
+
+def _bearer(request: Request) -> str | None:
+    header = request.headers.get("authorization")
+    if header is None:
+        return None
+    scheme, _, value = header.partition(" ")
+    return value.strip() if scheme.lower() == "bearer" else None
+
+
+def _token_user(db: Session, raw: str) -> tuple[User, ApiToken]:
+    tok = db.scalar(select(ApiToken).where(ApiToken.token_hash == hash_token(raw))) if raw else None
+    now = dt.datetime.now(dt.UTC)
+    if tok is None or tok.revoked_at is not None or aware(tok.expires_at) <= now:
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED,
+            "Invalid, expired or revoked API token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if tok.last_used_at is None or now - aware(tok.last_used_at) > _TOUCH_EVERY:
+        tok.last_used_at = now
+        db.commit()
+    return tok.user, tok
+
+
+def current_token(request: Request) -> ApiToken | None:
+    """The API token this request authenticated with, if any (set by current_user)."""
+    return getattr(request.state, "api_token", None)
+
+
 def current_user(
     request: Request,
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> User | None:
-    """The signed-in user, or the dev user when auth is disabled."""
+    """The token's owner, else the signed-in user, else the dev user when auth is disabled."""
+    raw = _bearer(request)
+    if raw is not None:
+        user, tok = _token_user(db, raw)
+        request.state.api_token = tok
+        return user
+
     if not settings.auth_enabled:
         user = db.scalar(select(User).where(User.subject == "dev"))
         if user is None:
@@ -134,6 +195,24 @@ def require_user(user: User | None = Depends(current_user)) -> User:
 def require_admin(user: User = Depends(require_user)) -> User:
     if not user.is_admin:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Administrator access required")
+    return user
+
+
+def _no_token(request: Request) -> None:
+    if current_token(request) is not None:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Not with an API token: sign in to the app to do this"
+        )
+
+
+def require_session_user(request: Request, user: User = Depends(require_user)) -> User:
+    """A signed-in person, not a token: for managing tokens and calendar URLs."""
+    _no_token(request)
+    return user
+
+
+def require_session_admin(request: Request, user: User = Depends(require_admin)) -> User:
+    _no_token(request)
     return user
 
 

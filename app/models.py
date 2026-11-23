@@ -1,6 +1,7 @@
 """SQLAlchemy models.
 
-Conferences and milestones are reference data, editable by admins in the app.
+Series, editions (conferences) and milestones are reference data, editable by
+admins in the app or with an API token; every such write is logged in `changes`.
 Submissions are shared across everyone. Stars are private to each user.
 """
 
@@ -11,6 +12,7 @@ import secrets
 import uuid
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     Date,
     DateTime,
@@ -215,3 +217,64 @@ class Star(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     user: Mapped[User] = relationship(back_populates="stars")
+
+
+class ApiToken(Base):
+    """A personal API token: acts as its owner, shown once, stored only as a hash."""
+
+    __tablename__ = "api_tokens"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE", name="api_tokens_user_id_fkey"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(120))
+    prefix: Mapped[str] = mapped_column(String(16))  # the first characters, to recognise it
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    expires_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True))
+    last_used_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    user: Mapped[User] = relationship()
+
+
+class Change(Base):
+    """One write to a series, edition or milestone, with what it was before and after.
+
+    `before` is None for a create and `after` None for a delete. The snapshot of a
+    deleted edition carries its milestones and the ideas that pointed at it, so
+    undoing the delete brings them back.
+    """
+
+    __tablename__ = "changes"
+    __table_args__ = (Index("ix_changes_entity", "entity", "entity_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    actor_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL", name="changes_actor_id_fkey"), nullable=True
+    )
+    actor_name: Mapped[str] = mapped_column(String(255), default="")
+    via: Mapped[str] = mapped_column(String(16), default="web")  # "web" | "token"
+    token_id: Mapped[str | None] = mapped_column(
+        ForeignKey("api_tokens.id", ondelete="SET NULL", name="changes_token_id_fkey"),
+        nullable=True,
+    )
+    token_name: Mapped[str] = mapped_column(String(120), default="")
+    entity: Mapped[str] = mapped_column(String(16))  # "series" | "edition" | "milestone"
+    entity_id: Mapped[str] = mapped_column(String(32))
+    series_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    action: Mapped[str] = mapped_column(String(16))  # "create" | "update" | "delete"
+    label: Mapped[str] = mapped_column(String(600), default="")
+    before: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    after: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    source: Mapped[str] = mapped_column(String(1000), default="")
+    note: Mapped[str] = mapped_column(Text, default="")
+    undo_of: Mapped[int | None] = mapped_column(
+        ForeignKey("changes.id", ondelete="SET NULL", name="changes_undo_of_fkey"), nullable=True
+    )
+    undone_by: Mapped[int | None] = mapped_column(
+        ForeignKey("changes.id", ondelete="SET NULL", name="changes_undone_by_fkey"),
+        nullable=True,
+    )

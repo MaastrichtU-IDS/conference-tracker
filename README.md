@@ -9,7 +9,7 @@ Self-hosted successor to the Claude artifact prototype.
 - **Map** — world map of event locations, clickable to filter.
 - **Submissions** — a shared board where the group registers ideas and tracks them from Idea to Accepted. Registered ideas surface inline on the deadline rows they are relevant to. Members only: with sign-in enabled, the API never returns submissions to an anonymous caller. Conferences and milestones stay public, as they are in `/feeds/all.ics`.
 - **Calendar** — a per-person subscribable `.ics` feed of starred items, plus one public feed of everything.
-- **Admin** — in-app editing of series, editions and milestones for designated accounts.
+- **Admin** — in-app editing of series, editions and milestones for designated accounts, a log of every change with undo, and personal API tokens so an AI routine or a script can do the same edits.
 
 Ships seeded with 29 series (one 2027 edition each) and 174 milestones.
 
@@ -94,6 +94,59 @@ the last two are what needs updating.
 | `PUT`/`DELETE /api/conferences/{id}` | an edition; deleting removes its milestones |
 | `POST /api/conferences/{id}/milestones`, `PUT`/`DELETE /api/milestones/{id}` | milestones |
 
+Every write above may carry `?source=<url>` (where the new value was read, e.g.
+the CFP page) and `?note=<why>`; both are kept in the change log.
+
+### Change log and undo
+
+Each create, update and delete of a series, edition or milestone is recorded in
+`changes` (`app/editing.py`), with the values before and after, who made it,
+whether through the app or an API token (and which), and the source and note.
+Saving a form without changing anything records nothing.
+
+A change can be undone while the record still looks exactly as that change left
+it; if something has edited it since, undo refuses (409) rather than overwrite
+the later edit — undo the newer change first. Undoing is itself a change, so
+undoing the undo is a redo. Undoing an edition's deletion brings back its
+milestones under their old ids and re-links the ideas that pointed at it. Stars
+on a deleted series are not restored.
+
+| Admins (app or token) | |
+| --- | --- |
+| `GET /api/changes?series=eswc&limit=50&before=<id>` | newest first; `series` takes an id or acronym, `entity_id` narrows to one record |
+| `POST /api/changes/{id}/undo` | revert one change; returns the new change |
+
+The Admin tab shows the log under *Recent changes*, with an Undo button on each
+entry and a *History* button on each series.
+
+### API tokens
+
+A signed-in admin creates tokens in the Admin tab (*API tokens*). A token acts
+as its owner with the owner's rights, so it can make every admin edit; its
+writes go live immediately and land in the change log marked with the token's
+name. Send it as `Authorization: Bearer ct_…`.
+
+- Shown once at creation; only its SHA-256 hash is stored.
+- Expires after 1–365 days (default 90). Any admin can see every token and
+  revoke it; revocation takes effect on the next request.
+- A bad, expired or revoked token is a 401, never treated as anonymous.
+- Tokens cannot list, create or revoke tokens, or rotate calendar URLs: a leaked
+  token cannot mint another. Those need a signed-in session.
+- The token's power follows its owner: someone removed from the admin group
+  loses write access at their next sign-in, and their tokens with it. Revoke
+  their tokens too, so nothing keeps working until then.
+
+| Signed-in admins only (not with a token) | |
+| --- | --- |
+| `GET /api/tokens` | every token, without its value |
+| `POST /api/tokens` `{"name": "monthly AI routine", "expires_in_days": 90}` | a new token; the value is in this response only |
+| `DELETE /api/tokens/{id}` | revoke |
+
+```bash
+curl -X PUT "$BASE_URL/api/conferences/$EDITION_ID?source=https://…/cfp&note=deadline+extended" \
+  -H "Authorization: Bearer $TRACKER_TOKEN" -H 'Content-Type: application/json' -d @edition.json
+```
+
 The seed loader only runs when no series exists, so it is safe on every boot
 and will not overwrite edits made in the app. Seed rows are editions: `venue`
 names the series and an optional `year` the edition (else the event's year).
@@ -110,6 +163,7 @@ which is what `docker compose up` relies on.
 A database from before migrations existed (v0.1.x) is recognised and stamped at
 the baseline `0001` before upgrading. `0002` split series from editions: every
 existing conference became the 2027 edition of a new series, keeping its id.
+`0003` added `api_tokens` and `changes`.
 Migrations have no downgrade; restore a backup instead. `tests/test_migrations.py`
 runs them on SQLite, and on PostgreSQL when `PG_TEST_URL` is set.
 

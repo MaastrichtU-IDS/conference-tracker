@@ -116,12 +116,47 @@
 
 <section class="view" id="v-admin">
   <div class="adminbar">
-    <b>Series, editions and milestones</b>
-    <span>Edits are saved immediately and seen by everyone.</span>
-    <div style="flex:1"></div>
-    <button class="btn sm" id="newconf">+ New series</button>
+    <button class="chip on" data-a="edit">Series &amp; editions</button>
+    <button class="chip" data-a="changes">Recent changes</button>
+    <button class="chip" data-a="tokens">API tokens</button>
   </div>
-  <div id="adminlist"></div>
+
+  <div class="apane" id="a-edit">
+    <div class="adminbar">
+      <span>Edits are saved immediately and seen by everyone. Each one is logged under Recent changes, where it can be undone.</span>
+      <div style="flex:1"></div>
+      <button class="btn sm" id="newconf">+ New series</button>
+    </div>
+    <div id="adminlist"></div>
+  </div>
+
+  <div class="apane hidden" id="a-changes">
+    <div class="adminbar">
+      <span>Every edit to a series, edition or milestone, newest first, from the app or an API token. Undo works while nothing has changed that record since.</span>
+      <div style="flex:1"></div>
+      <select id="chseries"><option value="">All series</option></select>
+    </div>
+    <div class="panel" id="chlist"></div>
+    <div style="margin-top:10px"><button class="btn ghost sm hidden" id="chmore">Older changes</button></div>
+  </div>
+
+  <div class="apane hidden" id="a-tokens">
+    <div class="feedbox">
+      <h3>New API token</h3>
+      <p>A token acts as you, with your admin rights, so an AI routine or a script can maintain the tracker. Its edits go live immediately and appear under Recent changes, where they can be undone. Tokens cannot create other tokens.</p>
+      <div class="feedurl">
+        <input type="text" id="tkname" placeholder="What it is for, e.g. monthly AI routine" style="flex:1;min-width:220px">
+        <select id="tkdays"><option value="30">30 days</option><option value="90" selected>90 days</option><option value="180">180 days</option><option value="365">1 year</option></select>
+        <button class="btn sm" id="tkcreate">Create token</button>
+      </div>
+      <div class="tknew hidden" id="tknew">
+        <b>Copy this token now. It will not be shown again.</b>
+        <div class="feedurl"><code id="tkvalue"></code><button class="btn ghost sm" id="tkcopy">Copy</button></div>
+        <p>Send it as <code>Authorization: Bearer &lt;token&gt;</code>. Writes may carry <code>?source=&lt;url&gt;</code> and <code>?note=&lt;why&gt;</code>, which go into the change log.</p>
+      </div>
+    </div>
+    <div class="panel" id="tklist"></div>
+  </div>
 </section>
 </div>
 

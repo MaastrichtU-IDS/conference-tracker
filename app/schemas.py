@@ -139,3 +139,45 @@ class BootstrapOut(BaseModel):
     submissions: list[SubmissionOut]
     stars: dict[str, list[str]]
     me: MeOut
+
+
+class TokenIn(BaseModel):
+    name: str = Field(
+        min_length=1, max_length=120, description="What it is for, e.g. 'monthly AI routine'"
+    )
+    expires_in_days: int = Field(90, ge=1, le=365)
+
+
+class TokenOut(BaseModel):
+    id: str
+    name: str
+    prefix: str  # the first characters, to recognise it
+    owner: str
+    created_at: dt.datetime
+    expires_at: dt.datetime
+    last_used_at: dt.datetime | None = None
+    revoked_at: dt.datetime | None = None
+
+
+class TokenCreated(TokenOut):
+    token: str  # shown this once; only a hash is kept
+
+
+class ChangeOut(BaseModel):
+    id: int
+    at: dt.datetime
+    actor: str
+    via: str  # "web" | "token"
+    token: str = ""  # the token's name when via == "token"
+    entity: str  # "series" | "edition" | "milestone"
+    entity_id: str
+    series_id: str | None = None
+    action: str  # "create" | "update" | "delete"
+    label: str  # "ESWC 2027 · Paper submission (Research)"
+    fields: list[str] = Field(default_factory=list)  # what an update changed
+    before: dict | None = None
+    after: dict | None = None
+    source: str = ""
+    note: str = ""
+    undo_of: int | None = None
+    undone_by: int | None = None

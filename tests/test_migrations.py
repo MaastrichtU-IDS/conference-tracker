@@ -130,7 +130,7 @@ def test_fresh_database_reaches_head_and_matches_the_models(engine):
     with engine.connect() as c:
         diffs = compare_metadata(MigrationContext.configure(c), Base.metadata)
         assert diffs == [], diffs
-        assert c.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0002"
+        assert c.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0003"
 
 
 def test_legacy_database_is_stamped_and_converted(engine):
