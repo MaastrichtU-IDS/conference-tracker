@@ -3,12 +3,23 @@
 from __future__ import annotations
 
 import datetime as dt
+import re
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field
+
+_WEB_URL = re.compile(r"https?://\S", re.I)
+
+
+def _web_url(value: str) -> str:
+    if value and not _WEB_URL.match(value):
+        raise ValueError("must be empty or start with http:// or https://")
+    return value
+
 
 # A link the app renders as <a href>: empty, or an http(s) address. Anything else
-# (javascript:, data:, a bare host) is refused, whoever writes it.
-WEB_URL = r"^(?:[hH][tT][tT][pP][sS]?://\S.*)?$"
+# (javascript:, data:, a bare host) is refused, whoever writes it. Input only.
+WebUrl = Annotated[str, Field(max_length=500), AfterValidator(_web_url)]
 
 
 class MilestoneIn(BaseModel):
@@ -36,7 +47,7 @@ class SeriesIn(BaseModel):
 
     acronym: str = Field(min_length=1, max_length=80, pattern=r"^\S(.*\S)?$")
     name: str = ""
-    homepage: str = Field("", max_length=500, pattern=WEB_URL)
+    homepage: WebUrl = ""
     emphasis: str = ""
     fit: str = ""
     notes: str = ""
@@ -62,7 +73,7 @@ class EditionIn(BaseModel):
     year: int = Field(ge=1950, le=2100)
     location: str = ""
     site_key: str | None = None
-    url: str = Field("", max_length=500, pattern=WEB_URL)
+    url: WebUrl = ""
     status: str = ""
     notes: str = ""
     source: str = ""
