@@ -28,10 +28,18 @@ class Settings:
     allowed_email_domains: tuple[str, ...] = tuple(
         x.strip().lower() for x in os.getenv("ALLOWED_EMAIL_DOMAINS", "").split(",") if x.strip()
     )
-    # Comma-separated emails granted admin (conference/milestone editing).
+    # Who may edit conferences and milestones. ADMIN_GROUPS (comma-separated
+    # names from the token's `groups` claim) wins when set; ADMIN_EMAILS is then
+    # ignored. Admin status is re-evaluated at every sign-in.
+    admin_groups: tuple[str, ...] = tuple(
+        x.strip().lstrip("/") for x in os.getenv("ADMIN_GROUPS", "").split(",") if x.strip()
+    )
     admin_emails: tuple[str, ...] = tuple(
         x.strip().lower() for x in os.getenv("ADMIN_EMAILS", "").split(",") if x.strip()
     )
+    # Refuse sign-in unless the provider vouches for the email (`email_verified`).
+    # The domain check above is only as good as this.
+    require_verified_email: bool = _bool("REQUIRE_VERIFIED_EMAIL", True)
 
     # When OIDC is not configured the app runs in single-user dev mode.
     dev_auth: bool = _bool("DEV_AUTH", False)

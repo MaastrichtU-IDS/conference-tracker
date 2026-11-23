@@ -44,7 +44,9 @@ pytest -q
 | `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` | — | Client credentials. All three must be set to enable sign-in. |
 | `OIDC_SCOPES` | `openid email profile` | Requested scopes. |
 | `ALLOWED_EMAIL_DOMAINS` | *(empty = any)* | Comma-separated domains permitted to sign in. |
-| `ADMIN_EMAILS` | *(empty)* | Comma-separated accounts that may edit conferences and milestones. |
+| `REQUIRE_VERIFIED_EMAIL` | `true` | Refuse sign-in unless the provider sends `email_verified: true`. Without it the domain check trusts whatever email the account carries. |
+| `ADMIN_GROUPS` | *(empty)* | Comma-separated groups (from the token's `groups` claim) whose members may edit conferences and milestones. When set, `ADMIN_EMAILS` is ignored. |
+| `ADMIN_EMAILS` | *(empty)* | Comma-separated accounts that may edit conferences and milestones, used only when `ADMIN_GROUPS` is empty. |
 | `INIT_DB_ON_START` | `true` | Create the schema at boot. Set `false` where a migration job owns it. |
 | `SEED_ON_START` | `true` | Load `seed/conferences.json` when the database is empty. |
 | `OTEL_SDK_DISABLED` | `true` | Tracing on/off. The image always runs under `opentelemetry-instrument`; flip this to `false` to export. |
@@ -52,10 +54,15 @@ pytest -q
 
 Register `BASE_URL/auth/callback` as the redirect URI with your identity provider.
 
+For `ADMIN_GROUPS`, the provider must put a `groups` claim in the ID token. On
+Keycloak: attach a client scope with a *Group Membership* mapper (claim `groups`,
+add to ID token) to the client as a **Default** scope.
+
 ## Data model
 
 Conferences and milestones are reference data, editable in the Admin tab by
-accounts listed in `ADMIN_EMAILS`. Submissions are shared and writable by any
+members of `ADMIN_GROUPS` (or, without it, the accounts in `ADMIN_EMAILS`); admin
+status is re-checked at every sign-in. Submissions are shared and writable by any
 signed-in user. Stars are private per user and are what the personal calendar
 feed is built from.
 

@@ -41,17 +41,59 @@ def oauth(settings: Settings):
     return _oauth
 
 
-def _upsert_user(db: Session, settings: Settings, subject: str, email: str, name: str) -> User:
+def _is_true(value) -> bool:
+    # Booleans in an ID token are JSON booleans; some userinfo endpoints send strings.
+    return value is True or (isinstance(value, str) and value.strip().lower() == "true")
+
+
+def _groups(claims: dict) -> set[str]:
+    raw = claims.get("groups")
+    if not isinstance(raw, list):
+        return set()
+    # Keycloak sends "/name" when the mapper's "Full group path" is on.
+    return {g.lstrip("/") for g in raw if isinstance(g, str)}
+
+
+def _is_admin(settings: Settings, email: str, claims: dict, current: bool) -> bool:
+    if settings.admin_groups:
+        return bool(_groups(claims) & set(settings.admin_groups))
+    if settings.admin_emails:
+        return email.lower() in settings.admin_emails
+    return current
+
+
+def admit(db: Session, settings: Settings, claims: dict) -> User:
+    """Decide from the provider's claims whether this person may sign in; return their user.
+
+    Raises 403 for an unverified or out-of-domain email. Admin status is set
+    from the current claims every time, so leaving the admin group takes effect
+    at the next sign-in.
+    """
+    email = (claims.get("email") or "").strip()
+    subject = claims.get("sub") or email
+    if not subject:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Identity provider returned no subject")
+
+    if settings.require_verified_email and not _is_true(claims.get("email_verified")):
+        log.info("sign-in refused: email not verified (sub=%s)", subject)
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Your email address is not verified. Ask an administrator to verify it.",
+        )
+
+    domains = settings.allowed_email_domains
+    if domains and not any(email.lower().endswith("@" + d) for d in domains):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "This account is not permitted to sign in")
+
+    name = claims.get("name") or claims.get("preferred_username") or email.split("@")[0]
     user = db.scalar(select(User).where(User.subject == subject))
     if user is None:
-        user = User(subject=subject, email=email, name=name)
+        user = User(subject=subject, email=email, name=name, is_admin=False)
         db.add(user)
     else:
         user.email = email or user.email
         user.name = name or user.name
-    user.is_admin = (
-        email.lower() in settings.admin_emails if settings.admin_emails else user.is_admin
-    )
+    user.is_admin = _is_admin(settings, email, claims, bool(user.is_admin))
     db.commit()
     db.refresh(user)
     return user
@@ -122,17 +164,7 @@ async def callback(
     if not claims:
         claims = await client.userinfo(token=token)
 
-    email = (claims.get("email") or "").strip()
-    subject = claims.get("sub") or email
-    if not subject:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Identity provider returned no subject")
-
-    domains = settings.allowed_email_domains
-    if domains and not any(email.lower().endswith("@" + d) for d in domains):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "This account is not permitted to sign in")
-
-    name = claims.get("name") or claims.get("preferred_username") or email.split("@")[0]
-    user = _upsert_user(db, settings, subject, email, name)
+    user = admit(db, settings, claims)
     request.session["uid"] = user.id
     return RedirectResponse("/")
 
