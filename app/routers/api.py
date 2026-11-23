@@ -4,21 +4,26 @@ from __future__ import annotations
 
 import datetime as dt
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
-from sqlalchemy import delete, select
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from ..auth import current_user, require_admin, require_user
 from ..config import Settings, get_settings
 from ..db import get_db
-from ..models import Conference, Milestone, Star, Submission, User
+from ..editions import aoe_today, current_edition
+from ..models import Conference, Milestone, Series, Star, Submission, User
 from ..schemas import (
     BootstrapOut,
-    ConferenceIn,
     ConferenceOut,
+    EditionDetail,
+    EditionIn,
     MeOut,
     MilestoneIn,
     MilestoneOut,
+    SeriesDetail,
+    SeriesIn,
+    SeriesOut,
     StarIn,
     SubmissionIn,
     SubmissionOut,
@@ -33,8 +38,63 @@ def _conf_out(c: Conference) -> ConferenceOut:
 
 def _ms_out(m: Milestone) -> MilestoneOut:
     out = MilestoneOut.model_validate(m)
-    out.venue = m.conference.venue if m.conference else ""
+    if m.conference:
+        out.series_id = m.conference.series_id
+        out.venue = m.conference.venue
+        out.year = m.conference.year
+        out.label = m.conference.label
     return out
+
+
+def _series_out(s: Series, today: dt.date, cls=SeriesOut):
+    shown, is_open = current_edition(s.editions, today)
+    return cls(
+        id=s.id,
+        acronym=s.acronym,
+        name=s.name,
+        homepage=s.homepage,
+        emphasis=s.emphasis,
+        fit=s.fit,
+        notes=s.notes,
+        years=[e.year for e in s.editions],
+        current_edition_id=shown.id if shown else None,
+        current_year=shown.year if shown else None,
+        open=is_open,
+    )
+
+
+def _series_detail(s: Series, today: dt.date) -> SeriesDetail:
+    out = _series_out(s, today, SeriesDetail)
+    out.editions = [
+        EditionDetail(**_conf_out(e).model_dump(), milestones=[_ms_out(m) for m in e.milestones])
+        for e in s.editions
+    ]
+    return out
+
+
+def _series_query():
+    return select(Series).options(selectinload(Series.editions).selectinload(Conference.milestones))
+
+
+def _find_series(db: Session, key: str) -> Series | None:
+    """By id or, case-insensitively, by acronym."""
+    return db.scalar(
+        _series_query().where(or_(Series.id == key, func.lower(Series.acronym) == key.lower()))
+    )
+
+
+def _acronym_taken(db: Session, acronym: str, except_id: str | None = None) -> bool:
+    q = select(Series.id).where(func.lower(Series.acronym) == acronym.lower())
+    if except_id:
+        q = q.where(Series.id != except_id)
+    return db.scalar(q) is not None
+
+
+def _year_taken(db: Session, series_id: str, year: int, except_id: str | None = None) -> bool:
+    q = select(Conference.id).where(Conference.series_id == series_id, Conference.year == year)
+    if except_id:
+        q = q.where(Conference.id != except_id)
+    return db.scalar(q) is not None
 
 
 def _sub_out(s: Submission) -> SubmissionOut:
@@ -42,6 +102,8 @@ def _sub_out(s: Submission) -> SubmissionOut:
         id=s.id,
         conference_id=s.conference_id,
         venue=s.conference.venue if s.conference else None,
+        series_id=s.conference.series_id if s.conference else None,
+        edition=s.conference.label if s.conference else None,
         title=s.title,
         track=s.track,
         lead=s.lead,
@@ -103,20 +165,20 @@ def bootstrap(
     Conferences and milestones are public deadlines. Submissions are members-only:
     an anonymous caller gets an empty list.
     """
-    confs = db.scalars(select(Conference).order_by(Conference.venue)).all()
-    mss = db.scalars(
-        select(Milestone).options(selectinload(Milestone.conference)).order_by(Milestone.date)
-    ).all()
+    today = aoe_today()
+    series = db.scalars(_series_query().order_by(Series.acronym)).all()
+    confs = [e for s in series for e in s.editions]
+    mss = sorted((m for e in confs for m in e.milestones), key=lambda m: m.date)
 
     subs: list[Submission] = []
-    stars: dict[str, list[str]] = {"conference": [], "milestone": []}
+    stars: dict[str, list[str]] = {"series": [], "milestone": []}
     if user is not None:
         subs = list(_all_submissions(db))
-        for s in db.scalars(select(Star).where(Star.user_id == user.id)):
-            stars.setdefault(s.kind, []).append(s.target_id)
+        stars = _stars_of(db, user)
 
     return BootstrapOut(
         app_name=settings.app_name,
+        series=[_series_out(s, today) for s in series],
         conferences=[_conf_out(c) for c in confs],
         milestones=[_ms_out(m) for m in mss],
         submissions=[_sub_out(s) for s in subs],
@@ -191,27 +253,38 @@ def delete_submission(
 # --------------------------------------------------------------------------
 # Stars — private to each user.
 # --------------------------------------------------------------------------
-@router.get("/stars")
-def list_stars(db: Session = Depends(get_db), user: User = Depends(require_user)) -> dict:
-    out: dict[str, list[str]] = {"conference": [], "milestone": []}
+def _stars_of(db: Session, user: User) -> dict[str, list[str]]:
+    out: dict[str, list[str]] = {"series": [], "milestone": []}
     for s in db.scalars(select(Star).where(Star.user_id == user.id)):
         out.setdefault(s.kind, []).append(s.target_id)
     return out
+
+
+def _star_target(db: Session, kind: str, target_id: str) -> tuple[str, str]:
+    """Normalise a star: a "conference" (edition) star becomes a star on its series."""
+    if kind == "conference":
+        conf = db.get(Conference, target_id)
+        if conf is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "No such conference")
+        return "series", conf.series_id
+    return kind, target_id
+
+
+@router.get("/stars")
+def list_stars(db: Session = Depends(get_db), user: User = Depends(require_user)) -> dict:
+    return _stars_of(db, user)
 
 
 @router.post("/stars")
 def add_star(
     payload: StarIn, db: Session = Depends(get_db), user: User = Depends(require_user)
 ) -> dict:
+    kind, target_id = _star_target(db, payload.kind, payload.target_id)
     exists = db.scalar(
-        select(Star).where(
-            Star.user_id == user.id,
-            Star.kind == payload.kind,
-            Star.target_id == payload.target_id,
-        )
+        select(Star).where(Star.user_id == user.id, Star.kind == kind, Star.target_id == target_id)
     )
     if exists is None:
-        db.add(Star(user_id=user.id, kind=payload.kind, target_id=payload.target_id))
+        db.add(Star(user_id=user.id, kind=kind, target_id=target_id))
         db.commit()
     return {"starred": True}
 
@@ -220,6 +293,7 @@ def add_star(
 def remove_star(
     kind: str, target_id: str, db: Session = Depends(get_db), user: User = Depends(require_user)
 ) -> dict:
+    kind, target_id = _star_target(db, kind, target_id)
     db.execute(
         delete(Star).where(Star.user_id == user.id, Star.kind == kind, Star.target_id == target_id)
     )
@@ -240,15 +314,113 @@ def rotate_feed_token(
 
 
 # --------------------------------------------------------------------------
-# Conferences and milestones — admin only.
+# Series and editions — anyone may read (they are public deadlines); admins write.
 # --------------------------------------------------------------------------
-@router.post("/conferences", response_model=ConferenceOut, status_code=status.HTTP_201_CREATED)
-def create_conference(
-    payload: ConferenceIn, db: Session = Depends(get_db), _: User = Depends(require_admin)
+@router.get("/series", response_model=list[SeriesOut])
+def search_series(
+    q: str = Query("", description="Acronym or name, case-insensitive; empty lists every series"),
+    db: Session = Depends(get_db),
+) -> list[SeriesOut]:
+    """Series matching `q`, each with the edition to show for it ("the next ESWC")."""
+    query = _series_query()
+    needle = q.strip().lower()
+    if needle:
+        like = f"%{needle}%"
+        query = query.where(
+            or_(func.lower(Series.acronym).like(like), func.lower(Series.name).like(like))
+        )
+    found = db.scalars(query).all()
+    # Exact acronym first, then acronyms that start with the query, then the rest.
+    found = sorted(
+        found,
+        key=lambda s: (
+            s.acronym.lower() != needle,
+            not s.acronym.lower().startswith(needle),
+            s.acronym.lower(),
+        ),
+    )
+    today = aoe_today()
+    return [_series_out(s, today) for s in found]
+
+
+@router.get("/series/{key}", response_model=SeriesDetail)
+def get_series(key: str, db: Session = Depends(get_db)) -> SeriesDetail:
+    """One series by id or acronym, with every edition and its milestones."""
+    s = _find_series(db, key)
+    if s is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such series")
+    return _series_detail(s, aoe_today())
+
+
+@router.post("/series", response_model=SeriesOut, status_code=status.HTTP_201_CREATED)
+def create_series(
+    payload: SeriesIn, db: Session = Depends(get_db), _: User = Depends(require_admin)
+) -> SeriesOut:
+    if _acronym_taken(db, payload.acronym):
+        raise HTTPException(status.HTTP_409_CONFLICT, "A series with that acronym already exists")
+    s = Series(**payload.model_dump())
+    db.add(s)
+    db.commit()
+    return _series_out(_find_series(db, s.id), aoe_today())
+
+
+@router.put("/series/{series_id}", response_model=SeriesOut)
+def update_series(
+    series_id: str,
+    payload: SeriesIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+) -> SeriesOut:
+    s = db.get(Series, series_id)
+    if s is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such series")
+    if _acronym_taken(db, payload.acronym, except_id=series_id):
+        raise HTTPException(status.HTTP_409_CONFLICT, "A series with that acronym already exists")
+    for field, value in payload.model_dump().items():
+        setattr(s, field, value)
+    db.commit()
+    return _series_out(_find_series(db, series_id), aoe_today())
+
+
+@router.delete(
+    "/series/{series_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    response_model=None,
+)
+def delete_series(
+    series_id: str, db: Session = Depends(get_db), _: User = Depends(require_admin)
+) -> None:
+    s = db.get(Series, series_id)
+    if s is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such series")
+    if s.editions:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "Delete the series' editions first; this removes nothing else"
+        )
+    db.execute(delete(Star).where(Star.kind == "series", Star.target_id == series_id))
+    db.delete(s)
+    db.commit()
+
+
+@router.post(
+    "/series/{series_id}/editions",
+    response_model=ConferenceOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_edition(
+    series_id: str,
+    payload: EditionIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
 ) -> ConferenceOut:
-    if db.scalar(select(Conference).where(Conference.venue == payload.venue)):
-        raise HTTPException(status.HTTP_409_CONFLICT, "That venue already exists")
-    conf = Conference(**payload.model_dump())
+    if db.get(Series, series_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such series")
+    if _year_taken(db, series_id, payload.year):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "That series already has an edition that year"
+        )
+    conf = Conference(series_id=series_id, **payload.model_dump())
     db.add(conf)
     db.commit()
     db.refresh(conf)
@@ -258,13 +430,18 @@ def create_conference(
 @router.put("/conferences/{conf_id}", response_model=ConferenceOut)
 def update_conference(
     conf_id: str,
-    payload: ConferenceIn,
+    payload: EditionIn,
     db: Session = Depends(get_db),
     _: User = Depends(require_admin),
 ) -> ConferenceOut:
+    """Update one edition."""
     conf = db.get(Conference, conf_id)
     if conf is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No such conference")
+    if _year_taken(db, conf.series_id, payload.year, except_id=conf_id):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "That series already has an edition that year"
+        )
     for field, value in payload.model_dump().items():
         setattr(conf, field, value)
     db.commit()
@@ -281,6 +458,7 @@ def update_conference(
 def delete_conference(
     conf_id: str, db: Session = Depends(get_db), _: User = Depends(require_admin)
 ) -> None:
+    """Delete one edition and its milestones; submissions to it lose their venue."""
     conf = db.get(Conference, conf_id)
     if conf is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No such conference")

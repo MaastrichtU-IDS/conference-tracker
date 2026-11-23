@@ -57,18 +57,44 @@ class User(Base):
         return self.feed_token
 
 
-class Conference(Base):
-    __tablename__ = "conferences"
+class Series(Base):
+    """A recurring conference (ESWC), holding what stays the same across years."""
+
+    __tablename__ = "series"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
-    venue: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    acronym: Mapped[str] = mapped_column(String(80), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(400), default="")
+    homepage: Mapped[str] = mapped_column(String(500), default="")
+    emphasis: Mapped[str] = mapped_column(Text, default="")
+    fit: Mapped[str] = mapped_column(Text, default="")
+    notes: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now
+    )
+
+    editions: Mapped[list[Conference]] = relationship(
+        back_populates="series", order_by="Conference.year"
+    )
+
+
+class Conference(Base):
+    """One edition of a series (ESWC 2027). Its id is what milestones, submissions
+    and calendar UIDs point at, so it never changes."""
+
+    __tablename__ = "conferences"
+    __table_args__ = (UniqueConstraint("series_id", "year", name="uq_conference_series_year"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    series_id: Mapped[str] = mapped_column(
+        ForeignKey("series.id", ondelete="RESTRICT", name="conferences_series_id_fkey"),
+        index=True,
+    )
+    year: Mapped[int] = mapped_column(Integer)
     location: Mapped[str] = mapped_column(String(200), default="")
     site_key: Mapped[str | None] = mapped_column(String(120), nullable=True)
     url: Mapped[str] = mapped_column(String(500), default="")
     status: Mapped[str] = mapped_column(String(200), default="")
-    emphasis: Mapped[str] = mapped_column(Text, default="")
-    fit: Mapped[str] = mapped_column(Text, default="")
     notes: Mapped[str] = mapped_column(Text, default="")
     source: Mapped[str] = mapped_column(String(200), default="")
 
@@ -84,10 +110,33 @@ class Conference(Base):
         DateTime(timezone=True), default=_now, onupdate=_now
     )
 
+    series: Mapped[Series] = relationship(back_populates="editions", lazy="joined")
     milestones: Mapped[list[Milestone]] = relationship(
         back_populates="conference", cascade="all, delete-orphan", order_by="Milestone.date"
     )
     submissions: Mapped[list[Submission]] = relationship(back_populates="conference")
+
+    # Series-level facts, read through the edition so feeds and API output keep
+    # their shape ("venue" is the series acronym).
+    @property
+    def venue(self) -> str:
+        return self.series.acronym if self.series else ""
+
+    @property
+    def name(self) -> str:
+        return self.series.name if self.series else ""
+
+    @property
+    def emphasis(self) -> str:
+        return self.series.emphasis if self.series else ""
+
+    @property
+    def fit(self) -> str:
+        return self.series.fit if self.series else ""
+
+    @property
+    def label(self) -> str:
+        return f"{self.venue} {self.year}"
 
 
 class Milestone(Base):
@@ -113,7 +162,7 @@ class Milestone(Base):
 
     @property
     def natural_key(self) -> str:
-        return "|".join([self.conference.venue, self.date.isoformat(), self.milestone, self.track])
+        return "|".join([self.conference.label, self.date.isoformat(), self.milestone, self.track])
 
 
 class Submission(Base):
@@ -154,14 +203,14 @@ class Submission(Base):
 
 
 class Star(Base):
-    """A user's private star on a conference or an individual milestone."""
+    """A user's private star on a series (every edition) or an individual milestone."""
 
     __tablename__ = "stars"
     __table_args__ = (UniqueConstraint("user_id", "kind", "target_id", name="uq_star_user_target"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    kind: Mapped[str] = mapped_column(String(16))  # "conference" | "milestone"
+    kind: Mapped[str] = mapped_column(String(16))  # "series" | "milestone"
     target_id: Mapped[str] = mapped_column(String(32), index=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
 

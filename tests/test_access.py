@@ -70,8 +70,16 @@ def test_anonymous_bootstrap_has_deadlines_but_no_submissions(client):
 def test_anonymous_cannot_write(client):
     with anonymous_with_auth_enabled() as anon:
         assert anon.post("/api/submissions", json={"title": "x"}).status_code == 401
-        star = {"kind": "conference", "target_id": "x"}
+        star = {"kind": "series", "target_id": "x"}
         assert anon.post("/api/stars", json=star).status_code == 401
+        assert anon.post("/api/series", json={"acronym": "X"}).status_code == 401
+
+
+def test_anyone_can_look_up_a_series(client):
+    """Deadlines are public: the series search works without signing in."""
+    with anonymous_with_auth_enabled() as anon:
+        assert anon.get("/api/series", params={"q": "eswc"}).json()[0]["acronym"] == "ESWC"
+        assert anon.get("/api/series/ESWC").status_code == 200
 
 
 def test_calendar_feeds_stay_open_without_sign_in(client):

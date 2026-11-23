@@ -94,6 +94,8 @@ input:focus,select:focus,textarea:focus{border-color:var(--accent);box-shadow:0 
 .dl .vv{font-family:'JetBrains Mono',monospace;font-size:12px}
 .dl .c{font-size:11px;color:var(--text-3);text-align:right;white-space:nowrap}
 .dl .row{display:contents}
+.card .years{display:flex;gap:6px;flex-wrap:wrap;padding:0 16px 10px}
+.card .notice{margin:0 16px 10px;padding:7px 10px;border-radius:8px;background:var(--warn-soft);color:var(--warn);font-size:12px}
 .card .ft{border-top:1px solid var(--line);padding:9px 16px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:var(--surface-2)}
 .ft .spacer{flex:1}
 details.more{border-top:1px solid var(--line)}

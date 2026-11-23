@@ -108,7 +108,7 @@ def conference_event(conf: Conference, stamp: str) -> list[str]:
         key=f"conference:{conf.id}",
         start=conf.start_date,
         end=conf.end_date or conf.start_date,
-        summary=f"{conf.venue} — {conf.name}" if conf.name else conf.venue,
+        summary=f"{conf.label} — {conf.name}" if conf.name else conf.label,
         stamp=stamp,
         location=conf.location,
         description=conf.emphasis,
@@ -118,7 +118,7 @@ def conference_event(conf: Conference, stamp: str) -> list[str]:
 
 
 def milestone_event(m: Milestone, stamp: str) -> list[str]:
-    venue = m.conference.venue if m.conference else ""
+    venue = m.conference.label if m.conference else ""
     track = m.track or ""
     summary = f"{venue} — {m.milestone}"
     if track and not track.lower().startswith("main"):

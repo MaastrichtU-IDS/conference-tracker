@@ -12,7 +12,7 @@ def _bool(name: str, default: bool = False) -> bool:
 
 class Settings:
     # --- core ---
-    app_name: str = os.getenv("APP_NAME", "2027 Conference Tracker")
+    app_name: str = os.getenv("APP_NAME", "Conference Tracker")
     base_url: str = os.getenv("BASE_URL", "http://localhost:8000").rstrip("/")
     secret_key: str = os.getenv("SECRET_KEY", "dev-insecure-change-me")
     database_url: str = os.getenv(

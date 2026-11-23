@@ -14,7 +14,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from .auth import router as auth_router
 from .config import get_settings
 from .db import SessionLocal, engine
-from .models import Base
+from .migrate import migrate
 from .routers.api import router as api_router
 from .routers.feeds import router as feeds_router
 from .seed import seed_if_empty
@@ -29,7 +29,7 @@ STATIC_DIR = Path(__file__).parent / "static"
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     if settings.init_db_on_start:
-        Base.metadata.create_all(engine)
+        migrate(engine)
         if settings.seed_on_start:
             with SessionLocal() as db:
                 created = seed_if_empty(db, settings.seed_file)

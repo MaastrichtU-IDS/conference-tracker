@@ -10,9 +10,13 @@ const MON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","
 const STATUSES = ["Idea","Drafting","Submitted","Under review","Accepted","Rejected","Parked"];
 const PROJECTS = ["SULO","AIDAVA","GLIOTWIN","RustDL / OWL reasoner","Minimal ontology","Coffee & metabolism","Other"];
 
-let CONFS = [], MSR = [], SUBS = [], MAP = null, ME = null;
-let STARS = { conference: new Set(), milestone: new Set() };
-let CONF_BY_ID = new Map();
+/* A series (ESWC) has yearly editions (ESWC 2027). CONFS are editions; each
+   series names the edition to show by default (current_edition_id): the next one
+   still taking submissions, else the latest. SEL holds a year the user picked. */
+let SERIES = [], CONFS = [], MSR = [], SUBS = [], MAP = null, ME = null;
+let STARS = { series: new Set(), milestone: new Set() };
+let CONF_BY_ID = new Map(), SERIES_BY_ID = new Map();
+const SEL = new Map();
 
 /* today = the current calendar day in Hawaii (UTC-10), so a deadline counts as
    future until 23:59:59 Hawaii time on its own date — the AoE convention. */
@@ -83,7 +87,7 @@ const venueOK = v => F.venues.size === 0 || F.venues.has(v);
 function timeOK(dateStr) { const n = days(dateStr); if (n === null) return F.time === "future"; return F.time === "future" ? n >= 0 : n < 0; }
 const qMatch = txt => !F.q || txt.toLowerCase().includes(F.q);
 const isStar = (kind, id) => STARS[kind].has(id);
-const starOK = (confId, msId) => !F.starred || isStar("conference", confId) || (msId && isStar("milestone", msId));
+const starOK = (seriesId, msId) => !F.starred || isStar("series", seriesId) || (msId && isStar("milestone", msId));
 
 /* ---------- stars ---------- */
 async function toggleStar(kind, id) {
@@ -149,8 +153,8 @@ function renderFilterBar() {
     else F.kinds.has(k) ? F.kinds.delete(k) : F.kinds.add(k);
     renderAll();
   });
-  $("#venuechips").innerHTML = CONFS.map(c =>
-    `<button class="chip ${F.venues.has(c.venue) ? "on" : ""}" data-vch="${esc(c.venue)}" title="${esc(c.name)}">${esc(c.venue)}</button>`).join("")
+  $("#venuechips").innerHTML = SERIES.map(s =>
+    `<button class="chip ${F.venues.has(s.acronym) ? "on" : ""}" data-vch="${esc(s.acronym)}" title="${esc(s.name)}">${esc(s.acronym)}</button>`).join("")
     + `<button class="chip plain" data-vch="__clear">All</button>`;
   $$("#venuechips [data-vch]").forEach(b => b.onclick = () => {
     const v = b.dataset.vch;
@@ -171,19 +175,19 @@ function renderFilterBar() {
 /* ---------- deadlines ---------- */
 function msFiltered() {
   return MSR.filter(m => venueOK(m.venue) && F.kinds.has(m._k) && timeOK(m.date)
-    && qMatch(`${m.venue} ${m.track || ""} ${m.milestone || ""} ${m.notes || ""}`)
-    && starOK(m.conference_id, m.id));
+    && qMatch(`${m.label} ${m.track || ""} ${m.milestone || ""} ${m.notes || ""}`)
+    && starOK(m.series_id, m.id));
 }
 function renderStarSection() {
   const sm = MSR.filter(m => isStar("milestone", m.id));
-  const sv = CONFS.filter(c => isStar("conference", c.id));
+  const sv = SERIES.filter(s => isStar("series", s.id));
   if (!sm.length && !sv.length) { $("#starsec").innerHTML = ""; return; }
-  const cards = sv.map(c => {
-    const next = MSR.filter(m => m.conference_id === c.id && pd(m.date) >= today)[0];
-    return `<div class="starcard"><div class="vrow"><div class="v">${esc(c.venue)}</div>${starBtn("conference", c.id, "Remove from starred")}</div>
-      <div class="m">whole conference &middot; next: ${next ? esc(next.milestone) : "no dates announced"}</div>
+  const cards = sv.map(s => {
+    const next = MSR.filter(m => m.series_id === s.id && pd(m.date) >= today)[0];
+    return `<div class="starcard"><div class="vrow"><div class="v">${esc(s.acronym)}</div>${starBtn("series", s.id, "Remove from starred")}</div>
+      <div class="m">every edition &middot; next: ${next ? esc(next.label + " · " + next.milestone) : "no dates announced"}</div>
       <div class="d"><span>${next ? fmt(next.date) : "—"}</span><span>${next ? rel(next.date) : ""}</span></div></div>`;
-  }).concat(sm.map(m => `<div class="starcard"><div class="vrow"><div class="v">${esc(m.venue)}</div>${starBtn("milestone", m.id, "Remove from starred")}</div>
+  }).concat(sm.map(m => `<div class="starcard"><div class="vrow"><div class="v">${esc(m.label)}</div>${starBtn("milestone", m.id, "Remove from starred")}</div>
       <div class="m">${esc(m.milestone)}${m.track && !/^main\b/i.test(m.track) ? " · " + esc(m.track) : ""}</div>
       <div class="d"><span>${fmt(m.date)}</span><span>${rel(m.date)}</span></div></div>`));
   $("#starsec").innerHTML = '<h2 class="sectionhead">&#9733; Your starred items <span style="font-weight:500;text-transform:none;letter-spacing:0">— click a star to remove; these drive your calendar feed</span></h2>'
@@ -207,7 +211,7 @@ function renderDeadlines() {
     html += `<div class="mrow" style="padding:7px 16px;grid-template-columns:auto 92px 1fr auto;align-items:center;gap:8px">
       ${starBtn("milestone", m.id, "Star this milestone")}
       <div class="md">${fmtShort(m.date)}${m.end_date ? "–" + fmtShort(m.end_date) : ""}</div>
-      <div><b>${esc(m.venue)}</b> &middot; ${esc(m.milestone)}${m.track && !mainTrack ? ` <span class="trk">${esc(m.track)}</span>` : ""} <span class="badge">${KINDLABEL[m._k]}</span>
+      <div><b>${esc(m.label)}</b> &middot; ${esc(m.milestone)}${m.track && !mainTrack ? ` <span class="trk">${esc(m.track)}</span>` : ""} <span class="badge">${KINDLABEL[m._k]}</span>
         <div class="mt">${mainTrack ? esc(m.track) : ""}${m.time_basis && m.time_basis !== "Not specified" && m.time_basis !== "Event local dates" ? (mainTrack ? " · " : "") + esc(m.time_basis) : ""}${m.status && m.status !== "Published" ? ' · <span style="color:var(--warn)">' + esc(m.status) + "</span>" : ""}${m.notes ? " · " + esc(m.notes) : ""}</div>
       </div>
       <div><span class="pill p-${urgency(m.date)}">${rel(m.date) || "—"}</span></div>
@@ -218,43 +222,67 @@ function renderDeadlines() {
   wireStars($("#mstable")); wireSubChips($("#mstable"));
 }
 
-/* ---------- conferences ---------- */
+/* ---------- conferences (one card per series) ---------- */
 let cSort = "paper";
-function confTimeOK(c) {
-  const mine = MSR.filter(m => m.conference_id === c.id);
-  const anyFuture = mine.some(m => pd(m.date) >= today);
-  return F.time === "future" ? (anyFuture || !mine.length) : !anyFuture;
-}
+const shownEdition = s => CONF_BY_ID.get(SEL.get(s.id) || s.current_edition_id);
+const hasDates = c => DATE_FIELDS.some(([f]) => c[f]) || MSR.some(m => m.conference_id === c.id);
+/* "future": every series, at its next edition (or the year picked on its card).
+   "past": every edition with nothing left ahead, one card each. */
 function confsFiltered() {
-  return CONFS.filter(c => venueOK(c.venue) && confTimeOK(c) && (!F.starred || isStar("conference", c.id))
-    && qMatch(`${c.venue} ${c.name} ${c.location || ""} ${c.emphasis || ""} ${c.fit || ""}`));
+  let items;
+  if (F.time === "future") {
+    items = SERIES.map(s => ({ s, c: shownEdition(s) })).filter(x => x.c);
+  } else {
+    items = CONFS.filter(c => {
+      const mine = MSR.filter(m => m.conference_id === c.id);
+      return mine.length && !mine.some(m => pd(m.date) >= today);
+    }).map(c => ({ s: SERIES_BY_ID.get(c.series_id), c }));
+  }
+  return items.filter(({ s, c }) => s && venueOK(s.acronym) && (!F.starred || isStar("series", s.id))
+    && qMatch(`${c.label} ${s.name} ${c.location || ""} ${s.emphasis || ""} ${s.fit || ""}`));
 }
-function confCard(c) {
+function editionNotice(s, c) {
+  if (F.time !== "future" || s.open || c.id !== s.current_edition_id) return "";
+  const msg = hasDates(c)
+    ? `Submissions for ${esc(c.label)} have closed; the next edition isn't announced yet.`
+    : `Dates for ${esc(c.label)} aren't announced yet.`;
+  return `<div class="notice">${msg}</div>`;
+}
+function yearChips(s, c) {
+  if (s.years.length < 2) return "";
+  const eds = CONFS.filter(e => e.series_id === s.id).sort((a, b) => a.year - b.year);
+  return `<div class="years">${eds.map(e => `<button class="chip ${e.id === c.id ? "on" : ""}" data-sel-s="${esc(s.id)}" data-sel-c="${esc(e.id)}"
+    title="${e.id === s.current_edition_id ? "the next edition" : ""}">${e.year}${e.id === s.current_edition_id ? " •" : ""}</button>`).join("")}</div>`;
+}
+function confCard({ s, c }) {
   const u = c.paper_date ? urgency(c.paper_date) : "tbd";
   const pillText = !c.paper_date ? "deadline TBA" : (days(c.paper_date) < 0 ? "closed" : rel(c.paper_date));
   const rows = [["Abstract", c.abstract_date], ["Paper", c.paper_date], ["Notification", c.notify_date], ["Camera-ready", c.camera_date]]
     .map(([k, v]) => `<div class="row"><div class="k">${k}</div><div class="vv">${fmt(v)}</div><div class="c">${v ? rel(v) : ""}</div></div>`).join("");
   const ev = `<div class="row"><div class="k">Event</div><div class="vv">${c.start_date ? fmtShort(c.start_date) + (c.end_date ? " – " + fmt(c.end_date) : "") : "—"}</div><div class="c">${c.start_date ? rel(c.start_date) : ""}</div></div>`;
-  const mine = SUBS.filter(s => s.conference_id === c.id);
+  const mine = SUBS.filter(x => x.conference_id === c.id);
   const ms = MSR.filter(m => m.conference_id === c.id && F.kinds.has(m._k) && timeOK(m.date));
+  const page = c.url || s.homepage;
   return `<article class="card">
     <div class="hd"><div class="t">
-      <div class="venue">${esc(c.venue)}</div>
-      <div class="fullname">${esc(c.name)}</div>
+      <div class="venue">${esc(c.label)}</div>
+      <div class="fullname">${esc(s.name)}</div>
       <div class="loc">${esc(c.location || "Location TBA")}</div>
-    </div>${starBtn("conference", c.id, "Star this conference")}<span class="pill p-${u}">${pillText}</span></div>
+    </div>${starBtn("series", s.id, "Star this series (every edition)")}<span class="pill p-${u}">${pillText}</span></div>
+    ${yearChips(s, c)}${editionNotice(s, c)}
     <div class="dl">${rows}${ev}</div>
     <details class="more"><summary>Scope, fit and notes</summary><div class="mbody">
-      <p><b>Emphasis.</b> ${esc(c.emphasis || "—")}</p>
-      <p><b>Worth submitting when.</b> ${esc(c.fit || "—")}</p>
-      ${c.notes ? `<p><b>Notes.</b> ${esc(c.notes)}</p>` : ""}
+      <p><b>Emphasis.</b> ${esc(s.emphasis || "—")}</p>
+      <p><b>Worth submitting when.</b> ${esc(s.fit || "—")}</p>
+      ${s.notes ? `<p><b>About the series.</b> ${esc(s.notes)}</p>` : ""}
+      ${c.notes ? `<p><b>Notes on ${esc(c.label)}.</b> ${esc(c.notes)}</p>` : ""}
       <p><b>Status.</b> ${esc(c.status || "—")}</p>
     </div></details>
     ${ms.length ? `<details class="more"><summary>Milestones matching your filters (${ms.length})</summary><div class="mbody"><div class="mlist">
       ${ms.map(m => `<div class="mrow"><div class="md">${fmtShort(m.date)}${m.end_date ? "–" + fmtShort(m.end_date) : ""}</div><div><div>${esc(m.milestone)} <span class="badge">${KINDLABEL[m._k]}</span></div><div class="mt">${esc(m.track || "")}</div></div></div>`).join("")}
     </div></div></details>` : ""}
     <div class="ft">
-      ${c.url ? `<a href="${esc(c.url)}" target="_blank" rel="noopener" class="btn ghost sm">Official page ↗</a>` : ""}
+      ${page ? `<a href="${esc(page)}" target="_blank" rel="noopener" class="btn ghost sm">Official page ↗</a>` : ""}
       <button class="btn ghost sm reg" data-cid="${esc(c.id)}">+ Register idea</button>
       <div class="spacer"></div>
       <span class="badge">${mine.length} idea${mine.length === 1 ? "" : "s"}</span>
@@ -265,18 +293,21 @@ function confCard(c) {
 function renderConfs() {
   const far = "9999-99-99";
   const list = confsFiltered().slice().sort((a, b) => {
-    if (cSort === "venue") return a.venue.localeCompare(b.venue);
-    if (cSort === "event") return (a.start_date || far).localeCompare(b.start_date || far);
-    return (a.paper_date || far).localeCompare(b.paper_date || far);
+    if (cSort === "venue") return a.s.acronym.localeCompare(b.s.acronym) || a.c.year - b.c.year;
+    if (cSort === "event") return (a.c.start_date || far).localeCompare(b.c.start_date || far);
+    return (a.c.paper_date || far).localeCompare(b.c.paper_date || far);
   });
-  $("#ccount").textContent = `${list.length} conference${list.length === 1 ? "" : "s"}`;
+  $("#ccount").textContent = `${list.length} ${F.time === "future" ? "series" : "past edition" + (list.length === 1 ? "" : "s")}`;
   $("#cgrid").innerHTML = list.length ? list.map(confCard).join("") : '<div class="empty">No conferences match these filters.</div>';
   $$(".reg").forEach(b => b.onclick = () => openModal(null, b.dataset.cid));
+  $$("#cgrid [data-sel-s]").forEach(b => b.onclick = () => { SEL.set(b.dataset.selS, b.dataset.selC); renderAll(); });
   wireStars($("#cgrid")); wireSubChips($("#cgrid"));
 }
 
 /* ---------- timeline ---------- */
-const T0 = new Date(2026, 6, 1), T1 = new Date(2027, 11, 31);
+/* A rolling window: three months back, eighteen ahead, so 2028 appears as it nears. */
+const T0 = new Date(today.getFullYear(), today.getMonth() - 3, 1);
+const T1 = new Date(today.getFullYear(), today.getMonth() + 19, 0);
 const SPAN = T1 - T0;
 const pct = d => Math.max(0, Math.min(100, (pd(d) - T0) / SPAN * 100));
 function renderTimeline() {
@@ -286,15 +317,15 @@ function renderTimeline() {
     `<div class="tlm ${m.getMonth() % 2 ? "q" : ""}">${MON[m.getMonth()]}${(m.getMonth() === 0 || i === 0) ? "<br><span style='opacity:.6'>" + m.getFullYear() + "</span>" : ""}</div>`).join("")}</div></div>`;
   const grid = `<div class="tlgrid">${months.map(() => "<span></span>").join("")}</div>`;
   const tdy = (today >= T0 && today <= T1) ? `<div class="todayline" style="left:${(today - T0) / SPAN * 100}%"></div>` : "";
-  const rows = confsFiltered().map(c => {
+  const rows = confsFiltered().map(({ c }) => {
     const marks = MSR.filter(m => m.conference_id === c.id && F.kinds.has(m._k) && m._k !== "event")
       .map(m => `<div class="mk ${m._k}" style="left:${pct(m.date)}%" title="${esc(m.milestone)} — ${fmt(m.date)}"></div>`).join("");
     let bar = "";
     if (c.start_date && F.kinds.has("event")) {
       const l = pct(c.start_date), r = pct(c.end_date || c.start_date);
-      bar = `<div class="ev" style="left:${l}%;width:${Math.max(r - l, 0.6)}%" title="${esc(c.venue)} ${fmt(c.start_date)}"></div>`;
+      bar = `<div class="ev" style="left:${l}%;width:${Math.max(r - l, 0.6)}%" title="${esc(c.label)} ${fmt(c.start_date)}"></div>`;
     }
-    return `<div class="tlrow"><div class="lbl">${esc(c.venue)}</div><div class="tltrack">${grid}${tdy}${bar}${marks}</div></div>`;
+    return `<div class="tlrow"><div class="lbl">${esc(c.label)}</div><div class="tltrack">${grid}${tdy}${bar}${marks}</div></div>`;
   }).join("");
   $("#tl").innerHTML = head + (rows || '<div class="empty" style="margin:16px">Nothing matches these filters.</div>');
   $("#tllegend").innerHTML = KINDS.filter(([k]) => k !== "event").map(([k, l]) =>
@@ -305,7 +336,7 @@ function renderTimeline() {
 /* ---------- map ---------- */
 function siteGroups() {
   const g = new Map();
-  confsFiltered().forEach(c => {
+  confsFiltered().forEach(({ c }) => {
     const site = c.site_key;
     if (!site || !MAP || !MAP.pts[site]) return;
     if (!g.has(site)) g.set(site, { site, xy: MAP.pts[site], confs: [] });
@@ -340,7 +371,7 @@ function renderMap() {
   if (!MAP) return;
   const sites = siteGroups(), laid = spread(sites);
   const sel = s => s.confs.some(c => F.venues.has(c.venue));
-  const starred = s => s.confs.some(c => isStar("conference", c.id));
+  const starred = s => s.confs.some(c => isStar("series", c.series_id));
   $("#mapbox").innerHTML = `<svg viewBox="0 0 ${MAP.w} ${MAP.h}" role="img" aria-label="World map of conference locations">
     <path d="${MAP.sphere}" fill="var(--ocean)"></path>
     <path d="${MAP.graticule}" fill="none" stroke="var(--landline)" stroke-width="0.3" opacity="0.45"></path>
@@ -352,17 +383,17 @@ function renderMap() {
       <circle class="ring" cx="${o.lx}" cy="${o.ly}" r="12"></circle>
       <circle class="dot" cx="${o.lx}" cy="${o.ly}" r="7.5"></circle>
       <text x="${o.lx}" y="${o.ly}">${s.n}</text>
-      <circle class="hit" cx="${o.lx}" cy="${o.ly}" r="13"><title>${esc(s.site)}: ${esc(s.confs.map(c => c.venue).join(", "))}</title></circle>
+      <circle class="hit" cx="${o.lx}" cy="${o.ly}" r="13"><title>${esc(s.site)}: ${esc(s.confs.map(c => c.label).join(", "))}</title></circle>
     </g>`; }).join("")}
   </svg>`;
   $("#sitelist").innerHTML = sites.length ? sites.map(s => `<div class="srow ${sel(s) ? "sel" : ""}" data-site="${esc(s.site)}">
       <div class="num">${s.n}</div>
       <div><div class="city">${esc(s.site)}</div>
-        <div class="vs">${esc(s.confs.map(c => c.venue).join(" · "))}</div>
+        <div class="vs">${esc(s.confs.map(c => c.label).join(" · "))}</div>
         <div class="dt">${s.first !== "9999" ? fmt(s.first) + " · " + rel(s.first) : "dates TBA"}</div></div>
     </div>`).join("") : '<div class="empty" style="margin:12px">No located conferences match these filters.</div>';
-  const un = confsFiltered().filter(c => !c.site_key || !MAP.pts[c.site_key]);
-  $("#unloc").innerHTML = un.length ? `<b style="color:var(--text-2)">No location announced:</b> ${un.map(c => esc(c.venue) + " (" + esc(c.location || "—") + ")").join(", ")}` : "";
+  const un = confsFiltered().map(x => x.c).filter(c => !c.site_key || !MAP.pts[c.site_key]);
+  $("#unloc").innerHTML = un.length ? `<b style="color:var(--text-2)">No location announced:</b> ${un.map(c => esc(c.label) + " (" + esc(c.location || "—") + ")").join(", ")}` : "";
   const pick = site => {
     const s = sites.find(x => x.site === site); if (!s) return;
     const all = s.confs.every(c => F.venues.has(c.venue));
@@ -378,7 +409,7 @@ let editing = null;
 function subCard(s) {
   return `<div class="sub-card" data-id="${esc(s.id)}">
     <div class="st">${esc(s.title || "Untitled")}</div>
-    <div class="sv">${esc(s.venue || "No venue yet")}${s.track ? " · " + esc(s.track) : ""}</div>
+    <div class="sv">${esc(s.edition || "No venue yet")}${s.track ? " · " + esc(s.track) : ""}</div>
     <div class="sv" style="color:var(--text-3)">${esc(who(s))}${s.coauthors ? ", " + esc(s.coauthors) : ""}${addedBy(s) ? ` <span style="opacity:.75">· added by ${esc(addedBy(s))}</span>` : ""}</div>
     <div class="sm">${s.project ? `<span class="tagdot">${esc(s.project)}</span>` : "<span></span>"}
       <span>${s.links && s.links.length ? s.links.length + " link" + (s.links.length > 1 ? "s" : "") : ""}</span></div>
@@ -388,7 +419,7 @@ function renderSubs() {
   const list = SUBS.filter(s => {
     if (s.conference_id && !venueOK(s.venue)) return false;
     if (!s.conference_id && F.venues.size) return false;
-    if (F.starred && s.conference_id && !isStar("conference", s.conference_id)) return false;
+    if (F.starred && s.conference_id && !isStar("series", s.series_id)) return false;
     return qMatch(JSON.stringify(s));
   });
   $("#subcount").textContent = SUBS.length || "";
@@ -447,25 +478,33 @@ async function saveSub() {
   } catch (err) { flash("Could not save: " + err.message); }
 }
 
-/* ---------- admin ---------- */
+/* ---------- admin: series → editions → milestones ---------- */
 const DATE_FIELDS = [["abstract_date","Abstract"],["paper_date","Paper"],["notify_date","Notify"],["camera_date","Camera"],["start_date","Start"],["end_date","End"]];
-function renderAdmin() {
-  if (!ME?.is_admin) { $("#adminlist").innerHTML = ""; return; }
-  $("#adminlist").innerHTML = CONFS.map(c => `<details class="panel" style="margin-bottom:10px" data-cid="${esc(c.id)}">
-    <summary style="padding:11px 14px;cursor:pointer;font-weight:600">${esc(c.venue)} <span style="font-weight:400;color:var(--text-3)">— ${esc(c.name)}</span></summary>
-    <div style="padding:4px 14px 14px">
-      <table class="edit"><tbody>
-        <tr><th>Venue</th><td><input data-f="venue" value="${esc(c.venue)}"></td><th>Name</th><td><input data-f="name" value="${esc(c.name)}"></td></tr>
+const OPEN = new Set();   // admin panels left open across re-renders
+function seriesFields(s) {
+  return `<table class="edit sfields"><tbody>
+    <tr><th>Acronym</th><td><input data-f="acronym" value="${esc(s.acronym)}"></td><th>Name</th><td><input data-f="name" value="${esc(s.name)}"></td></tr>
+    <tr><th>Homepage</th><td colspan="3"><input data-f="homepage" value="${esc(s.homepage)}" placeholder="the series' own site, not one year's"></td></tr>
+    <tr><th>Emphasis</th><td colspan="3"><input data-f="emphasis" value="${esc(s.emphasis)}"></td></tr>
+    <tr><th>Fit</th><td colspan="3"><input data-f="fit" value="${esc(s.fit)}"></td></tr>
+    <tr><th>Notes</th><td colspan="3"><input data-f="notes" value="${esc(s.notes)}"></td></tr>
+  </tbody></table>`;
+}
+function editionPanel(c) {
+  const key = "c:" + c.id;
+  return `<details class="panel edpanel" style="margin:8px 0 8px 14px" data-cid="${esc(c.id)}" data-open="${key}" ${OPEN.has(key) ? "open" : ""}>
+    <summary style="padding:9px 12px;cursor:pointer;font-weight:600">${esc(c.label)} <span style="font-weight:400;color:var(--text-3)">— ${esc(c.location || "location TBA")}</span></summary>
+    <div style="padding:4px 12px 12px">
+      <table class="edit efields"><tbody>
+        <tr><th>Year</th><td><input type="number" data-f="year" value="${c.year}"></td><th>Status</th><td><input data-f="status" value="${esc(c.status)}"></td></tr>
         <tr><th>Location</th><td><input data-f="location" value="${esc(c.location)}"></td><th>Map site key</th><td><input data-f="site_key" value="${esc(c.site_key || "")}" placeholder="e.g. Basel, Switzerland"></td></tr>
-        <tr><th>URL</th><td><input data-f="url" value="${esc(c.url)}"></td><th>Status</th><td><input data-f="status" value="${esc(c.status)}"></td></tr>
+        <tr><th>URL</th><td><input data-f="url" value="${esc(c.url)}" placeholder="this year's site"></td><th>Source</th><td><input data-f="source" value="${esc(c.source)}"></td></tr>
         ${DATE_FIELDS.map(([f, l]) => `<tr><th>${l}</th><td colspan="3"><input type="date" data-f="${f}" value="${c[f] || ""}"></td></tr>`).join("")}
-        <tr><th>Emphasis</th><td colspan="3"><input data-f="emphasis" value="${esc(c.emphasis)}"></td></tr>
-        <tr><th>Fit</th><td colspan="3"><input data-f="fit" value="${esc(c.fit)}"></td></tr>
         <tr><th>Notes</th><td colspan="3"><input data-f="notes" value="${esc(c.notes)}"></td></tr>
       </tbody></table>
       <div class="rowbtns" style="margin:10px 0 16px">
-        <button class="btn sm saveconf">Save conference</button>
-        <button class="btn danger sm delconf">Delete</button>
+        <button class="btn sm saveed">Save edition</button>
+        <button class="btn danger sm deled">Delete edition</button>
       </div>
       <b style="font-size:12px">Milestones</b>
       <table class="edit"><thead><tr><th style="width:120px">Date</th><th style="width:120px">End</th><th>Milestone</th><th>Track</th><th style="width:150px">Time basis</th><th style="width:90px"></th></tr></thead><tbody>
@@ -482,7 +521,25 @@ function renderAdmin() {
           <td><input data-f="time_basis" placeholder="23:59 AoE (UTC−12)"></td>
           <td class="rowbtns"><button class="btn sm addms">Add</button></td></tr>
       </tbody></table>
-    </div></details>`).join("");
+    </div></details>`;
+}
+function renderAdmin() {
+  if (!ME?.is_admin) { $("#adminlist").innerHTML = ""; return; }
+  $("#adminlist").innerHTML = SERIES.map(s => {
+    const key = "s:" + s.id;
+    const eds = CONFS.filter(c => c.series_id === s.id).sort((a, b) => b.year - a.year);
+    return `<details class="panel serpanel" style="margin-bottom:10px" data-sid="${esc(s.id)}" data-open="${key}" ${OPEN.has(key) ? "open" : ""}>
+    <summary style="padding:11px 14px;cursor:pointer;font-weight:600">${esc(s.acronym)} <span style="font-weight:400;color:var(--text-3)">— ${esc(s.name)} · ${s.years.length ? s.years.join(", ") : "no editions"}</span></summary>
+    <div style="padding:4px 14px 14px">
+      ${seriesFields(s)}
+      <div class="rowbtns" style="margin:10px 0 6px">
+        <button class="btn sm saveser">Save series</button>
+        <button class="btn ghost sm added">+ Add edition</button>
+        <button class="btn danger sm delser">Delete series</button>
+      </div>
+      ${eds.map(editionPanel).join("")}
+    </div></details>`;
+  }).join("");
   wireAdmin();
 }
 function fieldsOf(scope) {
@@ -490,40 +547,52 @@ function fieldsOf(scope) {
   scope.querySelectorAll("[data-f]").forEach(i => { out[i.dataset.f] = i.value || (i.type === "date" ? null : ""); });
   return out;
 }
+async function adminDo(promise, ok) {
+  try { await promise; await reload(); flash(ok); }
+  catch (err) { flash("Failed: " + err.message); }
+}
 function wireAdmin() {
-  $$("#adminlist details").forEach(det => {
-    const cid = det.dataset.cid;
-    const table = det.querySelector("table.edit");
-    det.querySelector(".saveconf").onclick = async () => {
-      try { const saved = await api(`/api/conferences/${cid}`, { method: "PUT", body: fieldsOf(table) });
-        Object.assign(CONFS.find(c => c.id === cid), saved); flash("Conference saved"); renderAll(); }
-      catch (err) { flash("Save failed: " + err.message); }
+  $$("#adminlist details[data-open]").forEach(d => d.ontoggle = () => {
+    d.open ? OPEN.add(d.dataset.open) : OPEN.delete(d.dataset.open);
+  });
+  $$("#adminlist .serpanel").forEach(det => {
+    const sid = det.dataset.sid, s = SERIES_BY_ID.get(sid);
+    det.querySelector(".saveser").onclick = () =>
+      adminDo(api(`/api/series/${sid}`, { method: "PUT", body: fieldsOf(det.querySelector(".sfields")) }), "Series saved");
+    det.querySelector(".delser").onclick = () => {
+      if (!window.confirm(`Delete the series ${s.acronym}? Only possible once it has no editions.`)) return;
+      adminDo(api(`/api/series/${sid}`, { method: "DELETE" }), "Series deleted");
     };
-    det.querySelector(".delconf").onclick = async () => {
-      if (!confirmInline(det, "Delete this conference and all its milestones?")) return;
-      try { await api(`/api/conferences/${cid}`, { method: "DELETE" }); await reload(); flash("Deleted"); }
-      catch (err) { flash("Delete failed: " + err.message); }
+    det.querySelector(".added").onclick = () => {
+      const next = s.years.length ? Math.max(...s.years) + 1 : today.getFullYear() + 1;
+      const year = window.prompt(`Year of the new ${s.acronym} edition`, String(next));
+      if (!year) return;
+      OPEN.add("s:" + sid);
+      adminDo(api(`/api/series/${sid}/editions`, { method: "POST", body: { year: +year } }), "Edition added");
+    };
+  });
+  $$("#adminlist .edpanel").forEach(det => {
+    const cid = det.dataset.cid;
+    det.querySelector(".saveed").onclick = () =>
+      adminDo(api(`/api/conferences/${cid}`, { method: "PUT", body: fieldsOf(det.querySelector(".efields")) }), "Edition saved");
+    det.querySelector(".deled").onclick = () => {
+      if (!window.confirm("Delete this edition and all its milestones? Ideas registered for it keep their text but lose the venue.")) return;
+      adminDo(api(`/api/conferences/${cid}`, { method: "DELETE" }), "Edition deleted");
     };
     det.querySelectorAll("tr[data-mid]").forEach(tr => {
-      tr.querySelector(".savems").onclick = async () => {
-        try { await api(`/api/milestones/${tr.dataset.mid}`, { method: "PUT", body: fieldsOf(tr) }); await reload(); flash("Milestone saved"); }
-        catch (err) { flash("Save failed: " + err.message); }
-      };
-      tr.querySelector(".delms").onclick = async () => {
-        try { await api(`/api/milestones/${tr.dataset.mid}`, { method: "DELETE" }); await reload(); flash("Milestone deleted"); }
-        catch (err) { flash("Delete failed: " + err.message); }
-      };
+      tr.querySelector(".savems").onclick = () =>
+        adminDo(api(`/api/milestones/${tr.dataset.mid}`, { method: "PUT", body: fieldsOf(tr) }), "Milestone saved");
+      tr.querySelector(".delms").onclick = () =>
+        adminDo(api(`/api/milestones/${tr.dataset.mid}`, { method: "DELETE" }), "Milestone deleted");
     });
     const newRow = det.querySelector("tr[data-new]");
-    newRow.querySelector(".addms").onclick = async () => {
+    newRow.querySelector(".addms").onclick = () => {
       const body = fieldsOf(newRow);
       if (!body.date) { flash("A date is required"); return; }
-      try { await api(`/api/conferences/${cid}/milestones`, { method: "POST", body }); await reload(); flash("Milestone added"); }
-      catch (err) { flash("Add failed: " + err.message); }
+      adminDo(api(`/api/conferences/${cid}/milestones`, { method: "POST", body }), "Milestone added");
     };
   });
 }
-function confirmInline(el, message) { return window.confirm(message); }
 
 /* ---------- render ---------- */
 function renderAll() {
@@ -533,15 +602,25 @@ function renderAll() {
 
 /* ---------- bootstrap ---------- */
 function indexData(data) {
+  SERIES = data.series;
+  SERIES_BY_ID = new Map(SERIES.map(x => [x.id, x]));
   CONFS = data.conferences;
   CONF_BY_ID = new Map(CONFS.map(c => [c.id, c]));
+  for (const [sid, cid] of SEL) if (!CONF_BY_ID.has(cid)) SEL.delete(sid);
   MSR = data.milestones.map(m => ({ ...m, _k: kindOf(m) }))
     .sort((a, b) => a.date.localeCompare(b.date));
   SUBS = data.submissions;
-  STARS = { conference: new Set(data.stars.conference || []), milestone: new Set(data.stars.milestone || []) };
+  STARS = { series: new Set(data.stars.series || []), milestone: new Set(data.stars.milestone || []) };
   ME = data.me;
 }
-async function reload() { indexData(await api("/api/bootstrap")); renderAll(); }
+async function reload() { indexData(await api("/api/bootstrap")); fillVenuePicker(); renderAll(); }
+function fillVenuePicker() {
+  const keep = $("#f-venue").value;
+  const eds = CONFS.slice().sort((a, b) => a.venue.localeCompare(b.venue) || b.year - a.year);
+  $("#f-venue").innerHTML = '<option value="">— pick a venue —</option>'
+    + eds.map(c => `<option value="${esc(c.id)}">${esc(c.label)} — ${esc(c.name)}</option>`).join("");
+  $("#f-venue").value = keep;
+}
 
 async function start() {
   let data;
@@ -558,8 +637,7 @@ async function start() {
   $("#feedurl").textContent = ME.feed_url || "—";
   $("#allfeedurl").textContent = location.origin + "/feeds/all.ics";
 
-  $("#f-venue").innerHTML = '<option value="">— pick a venue —</option>'
-    + CONFS.map(c => `<option value="${esc(c.id)}">${esc(c.venue)} — ${esc(c.name)}</option>`).join("");
+  fillVenuePicker();
   $("#f-status").innerHTML = STATUSES.map(s => `<option>${s}</option>`).join("");
   $("#projlist").innerHTML = PROJECTS.map(p => `<option value="${esc(p)}">`).join("");
 
@@ -601,10 +679,12 @@ $("#rotatefeed").onclick = async () => {
   catch (err) { flash("Could not rotate: " + err.message); }
 };
 $("#newconf").onclick = async () => {
-  const venue = window.prompt("Short venue code (e.g. ESWC)");
-  if (!venue) return;
-  try { await api("/api/conferences", { method: "POST", body: { venue, name: venue } }); await reload(); flash("Conference created"); }
-  catch (err) { flash("Could not create: " + err.message); }
+  const acronym = (window.prompt("Acronym of the new series (e.g. ESWC)") || "").trim();
+  if (!acronym) return;
+  try {
+    const s = await api("/api/series", { method: "POST", body: { acronym, name: acronym } });
+    OPEN.add("s:" + s.id); await reload(); flash("Series created — add its first edition");
+  } catch (err) { flash("Could not create: " + err.message); }
 };
 
 start();

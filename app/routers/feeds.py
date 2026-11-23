@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session, selectinload
 from ..config import Settings, get_settings
 from ..db import get_db
 from ..ics import build_calendar, is_lifecycle
-from ..models import Conference, Milestone, Star, User
+from ..models import Conference, Milestone, Series, Star, User
 
 router = APIRouter(prefix="/feeds", tags=["feeds"])
 
@@ -46,22 +46,23 @@ def all_feed(db: Session = Depends(get_db), settings: Settings = Depends(get_set
 def starred_feed(
     token: str, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)
 ) -> Response:
-    """One person's starred conferences and milestones."""
+    """One person's starred series (every edition) and milestones."""
     user = db.scalar(select(User).where(User.feed_token == token))
     if user is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Unknown calendar")
 
     stars = db.scalars(select(Star).where(Star.user_id == user.id)).all()
-    conf_ids = {s.target_id for s in stars if s.kind == "conference"}
+    series_ids = {s.target_id for s in stars if s.kind == "series"}
     ms_ids = {s.target_id for s in stars if s.kind == "milestone"}
 
     confs = (
         db.scalars(
             select(Conference)
+            .join(Series)
             .options(selectinload(Conference.milestones))
-            .where(Conference.id.in_(conf_ids))
+            .where(Conference.series_id.in_(series_ids))
         ).all()
-        if conf_ids
+        if series_ids
         else []
     )
 
