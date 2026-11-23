@@ -2,6 +2,8 @@
 its old and new values, and any recorded change can be undone while nothing has
 touched that record since."""
 
+import pytest
+
 
 def _changes(client, series_id, **params):
     res = client.get("/api/changes", params={"series": series_id, **params})
@@ -171,3 +173,70 @@ def test_unknown_change_is_404(client):
 def test_the_change_log_is_for_admins(auth_on):
     assert auth_on.get("/api/changes").status_code == 401
     assert auth_on.post("/api/changes/1/undo").status_code == 401
+
+
+def test_undo_a_new_edition_is_refused_once_ideas_are_registered_for_it(client, scratch):
+    s, _ = scratch
+    e = client.post(f"/api/series/{s['id']}/editions", json={"year": 2100}).json()
+    create = _changes(client, s["id"])[0]
+    sub = client.post("/api/submissions", json={"title": "Idea", "conference_id": e["id"]}).json()
+    try:
+        res = client.post(f"/api/changes/{create['id']}/undo")
+        assert res.status_code == 409 and "ideas" in res.json()["detail"]
+    finally:
+        client.delete(f"/api/submissions/{sub['id']}")
+    assert client.post(f"/api/changes/{create['id']}/undo").is_success
+
+
+def test_undoing_a_series_delete_keeps_its_stars(client):
+    s = client.post("/api/series", json={"acronym": "STARRED"}).json()
+    client.post("/api/stars", json={"kind": "series", "target_id": s["id"]})
+    try:
+        assert client.delete(f"/api/series/{s['id']}").status_code == 204
+        delete = _changes(client, s["id"])[0]
+        assert client.post(f"/api/changes/{delete['id']}/undo").is_success
+        assert s["id"] in client.get("/api/stars").json()["series"]
+    finally:
+        client.delete("/api/stars", params={"kind": "series", "target_id": s["id"]})
+        client.delete(f"/api/series/{s['id']}")
+
+
+@pytest.mark.parametrize(
+    "bad", ["javascript:alert(1)", "data:text/html,x", "eswc.org", " https://x"]
+)
+def test_links_must_be_web_addresses(client, scratch, bad):
+    s, e = scratch
+    assert (
+        client.put(
+            f"/api/series/{s['id']}", json={"acronym": "SCRATCH", "homepage": bad}
+        ).status_code
+        == 422
+    )
+    assert (
+        client.put(f"/api/conferences/{e['id']}", json={"year": 2099, "url": bad}).status_code
+        == 422
+    )
+
+
+def test_reads_never_fail_on_a_stored_odd_link(client, scratch):
+    """Rows written before links were checked must still load."""
+    from app.db import SessionLocal
+    from app.models import Conference
+
+    _, e = scratch
+    with SessionLocal() as db:
+        db.get(Conference, e["id"]).url = "see the CFP"
+        db.commit()
+    assert client.get("/api/bootstrap").status_code == 200
+    assert client.get("/api/series/scratch").status_code == 200
+
+
+def test_web_addresses_and_blanks_are_fine(client, scratch):
+    s, e = scratch
+    ok = client.put(
+        f"/api/series/{s['id']}", json={"acronym": "SCRATCH", "homepage": "https://x.org/"}
+    )
+    assert ok.status_code == 200
+    assert (
+        client.put(f"/api/conferences/{e['id']}", json={"year": 2099, "url": ""}).status_code == 200
+    )

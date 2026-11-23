@@ -46,7 +46,11 @@ async function api(path, options = {}) {
   if (res.status === 401) { showSignin(); throw new Error("unauthenticated"); }
   if (!res.ok) {
     let detail = res.statusText;
-    try { detail = (await res.json()).detail || detail; } catch (e) { /* non-JSON error */ }
+    try {
+      const d = (await res.json()).detail;
+      // 422s list each invalid field: show "url: String should match pattern …"
+      detail = Array.isArray(d) ? d.map(x => `${(x.loc || []).slice(-1)[0]}: ${x.msg}`).join("; ") : (d || detail);
+    } catch (e) { /* non-JSON error */ }
     throw new Error(detail);
   }
   return res.status === 204 ? null : res.json();
@@ -261,7 +265,7 @@ function confCard({ s, c }) {
   const ev = `<div class="row"><div class="k">Event</div><div class="vv">${c.start_date ? fmtShort(c.start_date) + (c.end_date ? " – " + fmt(c.end_date) : "") : "—"}</div><div class="c">${c.start_date ? rel(c.start_date) : ""}</div></div>`;
   const mine = SUBS.filter(x => x.conference_id === c.id);
   const ms = MSR.filter(m => m.conference_id === c.id && F.kinds.has(m._k) && timeOK(m.date));
-  const page = c.url || s.homepage;
+  const page = [c.url, s.homepage].find(safeUrl) || "";
   return `<article class="card">
     <div class="hd"><div class="t">
       <div class="venue">${esc(c.label)}</div>

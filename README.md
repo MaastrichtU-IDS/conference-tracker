@@ -108,8 +108,13 @@ A change can be undone while the record still looks exactly as that change left
 it; if something has edited it since, undo refuses (409) rather than overwrite
 the later edit — undo the newer change first. Undoing is itself a change, so
 undoing the undo is a redo. Undoing an edition's deletion brings back its
-milestones under their old ids and re-links the ideas that pointed at it. Stars
-on a deleted series are not restored.
+milestones under their old ids and re-links the ideas that pointed at it.
+Deleting a series leaves people's stars on it in place (they show nothing), so
+undoing the delete gives them back. Undoing the creation of an edition is
+refused once milestones or ideas have been added to it.
+
+Homepages and edition URLs must be empty or start with `http://` or `https://`;
+anything else (`javascript:`, a bare host name) is refused on the way in.
 
 | Admins (app or token) | |
 | --- | --- |
@@ -129,12 +134,15 @@ name. Send it as `Authorization: Bearer ct_…`.
 - Shown once at creation; only its SHA-256 hash is stored.
 - Expires after 1–365 days (default 90). Any admin can see every token and
   revoke it; revocation takes effect on the next request.
-- A bad, expired or revoked token is a 401, never treated as anonymous.
-- Tokens cannot list, create or revoke tokens, or rotate calendar URLs: a leaked
-  token cannot mint another. Those need a signed-in session.
-- The token's power follows its owner: someone removed from the admin group
-  loses write access at their next sign-in, and their tokens with it. Revoke
-  their tokens too, so nothing keeps working until then.
+- Any `Authorization` header that is not a valid, current token is a 401: never
+  treated as anonymous, as the browser session, or as the dev user.
+- Tokens cannot list, create or revoke tokens, rotate calendar URLs, or read
+  the owner's calendar URL: a leaked token cannot mint another or leave a
+  lasting way in. Those need a signed-in session.
+- The token's power follows its owner. When a sign-in finds the owner is no
+  longer in the admin group, all their tokens are revoked. Someone who leaves
+  and never signs in again keeps working tokens until they expire, so revoke
+  their tokens by hand when they leave.
 
 | Signed-in admins only (not with a token) | |
 | --- | --- |

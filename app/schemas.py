@@ -6,6 +6,10 @@ import datetime as dt
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# A link the app renders as <a href>: empty, or an http(s) address. Anything else
+# (javascript:, data:, a bare host) is refused, whoever writes it.
+WEB_URL = r"^(?:[hH][tT][tT][pP][sS]?://\S.*)?$"
+
 
 class MilestoneIn(BaseModel):
     date: dt.date
@@ -32,13 +36,14 @@ class SeriesIn(BaseModel):
 
     acronym: str = Field(min_length=1, max_length=80, pattern=r"^\S(.*\S)?$")
     name: str = ""
-    homepage: str = ""
+    homepage: str = Field("", max_length=500, pattern=WEB_URL)
     emphasis: str = ""
     fit: str = ""
     notes: str = ""
 
 
 class SeriesOut(SeriesIn):
+    homepage: str = ""  # checked on the way in only: never fail a read on stored data
     id: str
     years: list[int] = Field(default_factory=list)
     # The edition to show for this series (app/editions.py) and whether it still
@@ -57,7 +62,7 @@ class EditionIn(BaseModel):
     year: int = Field(ge=1950, le=2100)
     location: str = ""
     site_key: str | None = None
-    url: str = ""
+    url: str = Field("", max_length=500, pattern=WEB_URL)
     status: str = ""
     notes: str = ""
     source: str = ""
@@ -73,6 +78,7 @@ class ConferenceOut(EditionIn):
     """An edition, with its series' lasting facts alongside."""
 
     model_config = ConfigDict(from_attributes=True)
+    url: str = ""  # checked on the way in only: never fail a read on stored data
     id: str
     series_id: str
     venue: str  # the series acronym

@@ -127,3 +127,48 @@ def test_lifetime_is_bounded(client, days):
 def test_token_endpoints_need_a_signed_in_admin(auth_on):
     assert auth_on.get("/api/tokens").status_code == 401
     assert auth_on.post("/api/tokens", json={"name": "x"}).status_code == 401
+
+
+@pytest.mark.parametrize(
+    "header",
+    ["Token ct_bogus", "Basic Zm9vOmJhcg==", "Bearer\tct_bogus", "bearer", "Bearer  ", "ct_bogus"],
+)
+def test_any_malformed_authorization_header_is_401(client, auth_on, header):
+    """Never fall back to the dev user, a session or anonymous on a header we can't use."""
+    assert client.get("/api/me", headers={"Authorization": header}).status_code == 401
+    assert auth_on.get("/api/me", headers={"Authorization": header}).status_code == 401
+    res = client.post("/api/series", json={"acronym": "NOPE"}, headers={"Authorization": header})
+    assert res.status_code == 401
+
+
+def test_a_token_does_not_reveal_the_calendar_url(token, auth_on):
+    me = auth_on.get("/api/me", headers=_bearer(token["token"])).json()
+    assert me["authenticated"] and me["feed_url"] is None
+
+
+def test_losing_admin_at_sign_in_revokes_ones_tokens():
+    from app.auth import admit, new_token
+    from app.config import Settings
+
+    settings = Settings()
+    settings.admin_groups = ("conference-tracker-admins",)
+    settings.require_verified_email = False
+    claims = {"sub": "kc-demoted", "email": "demoted@x.nl", "groups": ["conference-tracker-admins"]}
+    with SessionLocal() as db:
+        user = admit(db, settings, claims)
+        assert user.is_admin
+        raw = new_token()
+        db.add(
+            ApiToken(
+                user_id=user.id,
+                name="old routine",
+                prefix=raw[:10],
+                token_hash=hashlib.sha256(raw.encode()).hexdigest(),
+                expires_at=dt.datetime.now(dt.UTC) + dt.timedelta(days=30),
+            )
+        )
+        db.commit()
+
+        admit(db, settings, {**claims, "groups": []})
+        tokens = db.scalars(select(ApiToken).where(ApiToken.user_id == user.id)).all()
+        assert tokens and all(t.revoked_at is not None for t in tokens)

@@ -100,7 +100,16 @@ def admit(db: Session, settings: Settings, claims: dict) -> User:
     else:
         user.email = email or user.email
         user.name = name or user.name
-    user.is_admin = _is_admin(settings, email, claims, bool(user.is_admin))
+    was_admin = bool(user.is_admin)
+    user.is_admin = _is_admin(settings, email, claims, was_admin)
+    if was_admin and not user.is_admin:
+        # A token carries its owner's rights; don't let it outlive them.
+        now = dt.datetime.now(dt.UTC)
+        for tok in db.scalars(
+            select(ApiToken).where(ApiToken.user_id == user.id, ApiToken.revoked_at.is_(None))
+        ):
+            tok.revoked_at = now
+        log.info("admin rights removed at sign-in; tokens revoked (sub=%s)", subject)
     db.commit()
     db.refresh(user)
     return user
@@ -127,11 +136,16 @@ def aware(value: dt.datetime | None) -> dt.datetime | None:
 
 
 def _bearer(request: Request) -> str | None:
+    """None without an Authorization header; else the bearer token, or "" if malformed.
+
+    Any Authorization header is taken as an attempt to use a token, so one we
+    cannot use is refused rather than ignored in favour of a session or dev mode.
+    """
     header = request.headers.get("authorization")
     if header is None:
         return None
-    scheme, _, value = header.partition(" ")
-    return value.strip() if scheme.lower() == "bearer" else None
+    parts = header.split()
+    return parts[1] if len(parts) == 2 and parts[0].lower() == "bearer" else ""
 
 
 def _token_user(db: Session, raw: str) -> tuple[User, ApiToken]:

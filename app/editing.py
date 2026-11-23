@@ -16,10 +16,10 @@ import typing
 from dataclasses import dataclass
 
 from pydantic import BaseModel
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .models import ApiToken, Change, Conference, Milestone, Series, Star, Submission, User
+from .models import ApiToken, Change, Conference, Milestone, Series, Submission, User
 from .schemas import EditionIn, MilestoneIn, SeriesIn
 
 
@@ -251,10 +251,11 @@ def update_series(db: Session, actor: Actor, series_id: str, data: SeriesIn) -> 
 
 
 def delete_series(db: Session, actor: Actor, series_id: str) -> None:
+    """Delete a series with no editions. Stars on it stay (they point nowhere and
+    show nothing), so undoing the delete gives everyone their star back."""
     s = _get(db, "series", series_id)
     if s.editions:
         raise Conflict("Delete the series' editions first; this removes nothing else")
-    db.execute(delete(Star).where(Star.kind == "series", Star.target_id == series_id))
     _delete(db, actor, "series", s)
     db.commit()
 
@@ -336,7 +337,8 @@ def _restore(db: Session, actor: Actor, change: Change) -> Change:
 
 
 def undo(db: Session, actor: Actor, change_id: int) -> Change:
-    change = db.get(Change, change_id)
+    # Lock the change row so two simultaneous undos of it cannot both apply.
+    change = db.get(Change, change_id, with_for_update=True)
     if change is None:
         raise NotFound("No such change")
     if change.undone_by is not None:
@@ -356,6 +358,11 @@ def undo(db: Session, actor: Actor, change_id: int) -> Change:
         if change.action == "create":
             if entity == "series" and current.editions:
                 raise Conflict(f"{change.label} has editions now; delete or undo those first")
+            if entity == "edition" and current.submissions:
+                raise Conflict(
+                    f"{change.label} has ideas registered for it now; "
+                    "move them to another edition first"
+                )
             if entity == "edition":
                 now = [snapshot("milestone", m) for m in current.milestones]
                 then = (change.after or {}).get("milestones", [])

@@ -135,9 +135,11 @@ def _all_submissions(db: Session):
     ).all()
 
 
-def _me_out(user: User | None, settings: Settings) -> MeOut:
+def _me_out(user: User | None, settings: Settings, request: Request) -> MeOut:
     if user is None:
         return MeOut(authenticated=False, auth_enabled=settings.auth_enabled)
+    # The calendar URL is a lasting credential of its own; a token doesn't get it.
+    feed = None if current_token(request) else f"{settings.base_url}/feeds/{user.feed_token}.ics"
     return MeOut(
         authenticated=True,
         auth_enabled=settings.auth_enabled,
@@ -145,20 +147,22 @@ def _me_out(user: User | None, settings: Settings) -> MeOut:
         email=user.email,
         name=user.name,
         is_admin=user.is_admin,
-        feed_url=f"{settings.base_url}/feeds/{user.feed_token}.ics",
+        feed_url=feed,
     )
 
 
 @router.get("/me", response_model=MeOut)
 def me(
+    request: Request,
     user: User | None = Depends(current_user),
     settings: Settings = Depends(get_settings),
 ) -> MeOut:
-    return _me_out(user, settings)
+    return _me_out(user, settings, request)
 
 
 @router.get("/bootstrap", response_model=BootstrapOut)
 def bootstrap(
+    request: Request,
     db: Session = Depends(get_db),
     user: User | None = Depends(current_user),
     settings: Settings = Depends(get_settings),
@@ -186,7 +190,7 @@ def bootstrap(
         milestones=[_ms_out(m) for m in mss],
         submissions=[_sub_out(s) for s in subs],
         stars=stars,
-        me=_me_out(user, settings),
+        me=_me_out(user, settings, request),
     )
 
 
