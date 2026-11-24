@@ -15,6 +15,8 @@ from .auth import router as auth_router
 from .config import get_settings
 from .db import SessionLocal, engine
 from .editing import EditError
+from .mcp_server import gate as mcp_gate
+from .mcp_server import running as mcp_running
 from .migrate import migrate
 from .routers.api import router as api_router
 from .routers.feeds import router as feeds_router
@@ -40,7 +42,8 @@ async def lifespan(_: FastAPI):
         log.info("INIT_DB_ON_START=false — expecting the migration job to have run")
     if not settings.auth_enabled:
         log.warning("OIDC is not configured — running in single-user dev mode")
-    yield
+    async with mcp_running():
+        yield
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan, docs_url="/api/docs")
@@ -62,6 +65,8 @@ async def edit_error(_: Request, exc: EditError) -> JSONResponse:
 app.include_router(api_router)
 app.include_router(feeds_router)
 app.include_router(auth_router)
+# The MCP server (app/mcp_server.py): admin API tokens only, checked before the SDK sees a byte.
+app.add_route("/mcp", mcp_gate, include_in_schema=False)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 

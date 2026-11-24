@@ -155,6 +155,42 @@ curl -X PUT "$BASE_URL/api/conferences/$EDITION_ID?source=https://…/cfp&note=d
   -H "Authorization: Bearer $TRACKER_TOKEN" -H 'Content-Type: application/json' -d @edition.json
 ```
 
+### MCP server (for Claude)
+
+`/mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server
+(`app/mcp_server.py`, Streamable HTTP, stateless) so an AI can keep the tracker
+current. It takes the same API tokens, and only them: no token, a bad one, or
+one whose owner is no longer an admin is refused before the MCP layer runs,
+even in dev mode. Its edits go through the same code as the app's, so they are
+in the change log, under the token's name, and can be undone.
+
+```bash
+claude mcp add --transport http conference-tracker "$BASE_URL/mcp" \
+  --header "Authorization: Bearer $TRACKER_TOKEN"
+```
+
+The Admin tab shows this command, filled in, when a token is created. In a
+claude.ai custom connector, choose no sign-in and set the same header.
+
+| Tool | |
+| --- | --- |
+| `tracker_search_series` | series by acronym/name, filter by `state` (`closed`/`awaiting` = needs updating) |
+| `tracker_get_series` | one series: editions, key dates, milestones, ids |
+| `tracker_list_changes` | the change log, newest first |
+| `tracker_add_series`, `tracker_update_series` | a new venue; its lasting facts |
+| `tracker_add_edition`, `tracker_update_edition` | a year of a series, its key dates (`clear` removes one) |
+| `tracker_add_milestone`, `tracker_update_milestone` | timeline steps |
+| `tracker_delete_milestone` | one milestone, with a `reason` |
+| `tracker_undo_change` | revert a change; refused if the record changed since |
+
+Rules on top of the REST API's: every add and update must cite `source_url`, an
+http(s) page the values came from; updates are partial (only the fields given
+change, so an AI never writes back stale copies of the rest); nothing deletes a
+series or an edition. Editions are named by id or label (`"ESWC 2027"`).
+Refusals (a clash, a stale undo, a bad link) come back as tool errors whose text
+says what to do. The server's instructions explain the series/edition model,
+AoE deadlines and the milestone names in use.
+
 The seed loader only runs when no series exists, so it is safe on every boot
 and will not overwrite edits made in the app. Seed rows are editions: `venue`
 names the series and an optional `year` the edition (else the event's year).
