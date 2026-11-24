@@ -352,3 +352,112 @@ def test_deleting_a_milestone_needs_a_reason(client, token, scratch):
     )
     assert gone["change"]["action"] == "delete"
     assert gone["change"]["note"] == "duplicate of the main-track notification"
+
+
+# --- from review --------------------------------------------------------------------
+
+
+def test_only_post_is_served(client, token):
+    """GET would open an event stream that revoking the token would not close."""
+    for method in ("GET", "DELETE", "PUT"):
+        res = client.request(method, "/mcp", headers={**ACCEPT, "Authorization": f"Bearer {token}"})
+        assert res.status_code == 405 and res.headers["allow"] == "POST"
+
+
+def test_undo_cannot_delete_a_series_or_an_edition(client, token, scratch):
+    err, text = call(
+        client, token, "tracker_add_edition", series="SCRATCH", year=2100, source_url=SRC
+    )
+    assert not err
+    added = text
+    err, text = call(
+        client, token, "tracker_undo_change", change_id=added["change"]["id"], note="oops"
+    )
+    assert err and "only a person" in text
+    assert len(ok(client, token, "tracker_get_series", series="SCRATCH")["editions"]) == 2
+    # A person can, in the app.
+    assert client.post(f"/api/changes/{added['change']['id']}/undo").is_success
+
+
+def test_undo_that_deletes_a_milestone_needs_a_note(client, token, scratch):
+    m = ok(
+        client,
+        token,
+        "tracker_add_milestone",
+        edition="SCRATCH 2099",
+        date="2098-11-01",
+        milestone="Notification",
+        source_url=SRC,
+    )
+    err, text = call(client, token, "tracker_undo_change", change_id=m["change"]["id"])
+    assert err and "note" in text
+    undone = ok(
+        client,
+        token,
+        "tracker_undo_change",
+        change_id=m["change"]["id"],
+        note="added to the wrong edition",
+    )
+    assert undone["change"]["action"] == "delete"
+    assert undone["change"]["note"] == "added to the wrong edition"
+
+
+def test_undo_is_not_advertised_as_idempotent(client, token):
+    tools = {t["name"]: t for t in rpc(client, token, "tools/list").json()["result"]["tools"]}
+    assert not tools["tracker_undo_change"]["annotations"].get("idempotentHint")
+
+
+def test_dev_mode_tokens_die_with_dev_mode(client, token, monkeypatch):
+    """A token minted while sign-in was off must not work once it is on."""
+    import app.auth
+    from app.config import Settings
+
+    on = Settings()
+    on.oidc_issuer, on.oidc_client_id, on.oidc_client_secret = "https://idp", "ct", "s"
+    on.dev_auth = False
+    monkeypatch.setattr(app.auth, "get_settings", lambda: on)
+    assert rpc(client, token, "tools/list").status_code == 401
+    assert client.get("/api/me", headers={"Authorization": f"Bearer {token}"}).status_code == 401
+
+
+def test_a_stored_odd_link_does_not_block_other_edits(client, token, scratch):
+    from app.models import Series
+
+    s, _ = scratch
+    with SessionLocal() as db:
+        db.get(Series, s["id"]).homepage = "scratch.example"  # from before links were checked
+        db.commit()
+    res = ok(
+        client, token, "tracker_update_series", series="SCRATCH", notes="hello", source_url=SRC
+    )
+    assert res["change"]["fields"] == ["notes"]
+    with SessionLocal() as db:
+        assert db.get(Series, s["id"]).homepage == "scratch.example"
+    # Setting the link itself is still checked.
+    err, text = call(
+        client,
+        token,
+        "tracker_update_series",
+        series="SCRATCH",
+        homepage="also.bad",
+        source_url=SRC,
+    )
+    assert err and "homepage" in text
+
+
+def test_too_long_values_are_explained(client, token, scratch):
+    err, text = call(
+        client,
+        token,
+        "tracker_add_milestone",
+        edition="SCRATCH 2099",
+        date="2098-11-01",
+        milestone="Notification",
+        track="x" * 300,
+        source_url=SRC,
+    )
+    assert err and "track" in text and "250" in text
+    res = client.put(
+        f"/api/conferences/{scratch[1]['id']}", json={"year": 2099, "location": "x" * 201}
+    )
+    assert res.status_code == 422

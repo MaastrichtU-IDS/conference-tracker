@@ -1,4 +1,6 @@
 fastapi==0.141.1
+# FastAPI 0.141 and mcp 2.3 leave Starlette unbounded; pin what the app is tested on.
+starlette==1.10.0
 uvicorn[standard]==0.34.0
 sqlalchemy==2.0.36
 alembic==1.14.1
@@ -8,6 +10,9 @@ python-multipart==0.0.20
 itsdangerous==2.2.0
 authlib==1.4.0
 httpx==0.28.1
-opentelemetry-distro==0.50b0
-opentelemetry-exporter-otlp==1.29.0
+opentelemetry-distro==0.66b2
+opentelemetry-exporter-otlp==1.45.2
 mcp==2.3.0
+mcp-types==2.3.0
+httpx2==2.16.2
+sse-starlette==3.7.1

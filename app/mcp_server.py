@@ -29,7 +29,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field, ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
@@ -135,6 +135,13 @@ class _Gate:
     """ASGI endpoint for /mcp: admit admin tokens only, then hand over to the SDK."""
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope.get("method") != "POST":
+            # Stateless JSON mode needs only POST. GET would open an event stream
+            # that outlives the token check (revoking would not close it).
+            await JSONResponse({"detail": "Use POST"}, 405, headers={"Allow": "POST"})(
+                scope, receive, send
+            )
+            return
         verdict = await run_in_threadpool(_admit, _bearer(Request(scope)))
         if isinstance(verdict, tuple):
             code, reason = verdict
@@ -207,10 +214,24 @@ def _edition(db: Session, key: str) -> Conference:
 
 
 def _merge(model: type[BaseModel], current: Any, given: dict) -> Any:
-    """The stored record's fields with the given ones on top, validated."""
-    values = {f: getattr(current, f) for f in model.model_fields}
-    values.update({k: v for k, v in given.items() if v is not None})
-    return model.model_validate(values)
+    """The stored record's fields with the given ones on top, validated.
+
+    Only the given fields are held to today's rules: a stored value written
+    before a rule existed (a homepage without http://) is kept as it is rather
+    than blocking an unrelated change.
+    """
+    given = {k: v for k, v in given.items() if v is not None}
+    values = {f: getattr(current, f) for f in model.model_fields} | given
+    try:
+        return model.model_validate(values)
+    except ValidationError as exc:
+        failed = {e["loc"][0] for e in exc.errors() if e["loc"]}
+        if not failed or failed & given.keys():
+            raise
+        data = model.model_validate({k: v for k, v in values.items() if k not in failed})
+        for k in failed:
+            setattr(data, k, values[k])
+        return data
 
 
 class WriteResult(BaseModel):
@@ -221,22 +242,14 @@ class WriteResult(BaseModel):
     )
 
 
-def _result(db: Session, since: int, record_id: str) -> WriteResult:
-    change = db.scalar(
-        select(Change)
-        .where(Change.id > since, Change.entity_id == record_id)
-        .order_by(Change.id.desc())
-        .limit(1)
-    )
+def _result(actor: Actor, record_id: str) -> WriteResult:
+    """What this call wrote: the change its write recorded, if anything changed."""
+    change = actor.recorded[-1] if actor.recorded else None
     return WriteResult(
         changed=change is not None,
         id=record_id,
         change=_change_out(change) if change else None,
     )
-
-
-def _mark(db: Session) -> int:
-    return db.scalar(select(func.max(Change.id))) or 0
 
 
 # --------------------------------------------------------------------------
@@ -267,6 +280,7 @@ EDIT = ToolAnnotations(
     read_only_hint=False, destructive_hint=True, idempotent_hint=True, open_world_hint=False
 )
 REMOVE = ToolAnnotations(read_only_hint=False, destructive_hint=True, open_world_hint=False)
+UNDO = REMOVE  # not idempotent: undoing twice is undo, then refused
 
 
 # --------------------------------------------------------------------------
@@ -337,8 +351,7 @@ def tracker_add_series(
         data = SeriesIn(
             acronym=acronym, name=name, homepage=homepage, emphasis=emphasis, fit=fit, notes=notes
         )
-        since = _mark(db)
-        return _result(db, since, editing.create_series(db, actor, data).id)
+        return _result(actor, editing.create_series(db, actor, data).id)
 
     return _act(ctx, run, source_url, note)
 
@@ -363,9 +376,8 @@ def tracker_update_series(
 
     def run(db: Session, actor: Actor) -> WriteResult:
         s = _series(db, series)
-        since = _mark(db)
         editing.update_series(db, actor, s.id, _merge(SeriesIn, s, given))
-        return _result(db, since, s.id)
+        return _result(actor, s.id)
 
     return _act(ctx, run, source_url, note)
 
@@ -403,8 +415,7 @@ def tracker_add_edition(
 
     def run(db: Session, actor: Actor) -> WriteResult:
         s = _series(db, series)
-        since = _mark(db)
-        return _result(db, since, editing.create_edition(db, actor, s.id, EditionIn(**fields)).id)
+        return _result(actor, editing.create_edition(db, actor, s.id, EditionIn(**fields)).id)
 
     return _act(ctx, run, source_url, note)
 
@@ -443,9 +454,8 @@ def tracker_update_edition(
         data = _merge(EditionIn, conf, given)
         for name in clear or ():
             setattr(data, name, None)
-        since = _mark(db)
         editing.update_edition(db, actor, conf.id, data)
-        return _result(db, since, conf.id)
+        return _result(actor, conf.id)
 
     return _act(ctx, run, source_url, note)
 
@@ -475,8 +485,7 @@ def tracker_add_milestone(
             date=date, end_date=end_date, milestone=milestone, track=track,
             time_basis=time_basis, status=status, notes=notes,
         )  # fmt: skip
-        since = _mark(db)
-        return _result(db, since, editing.create_milestone(db, actor, conf.id, data).id)
+        return _result(actor, editing.create_milestone(db, actor, conf.id, data).id)
 
     return _act(ctx, run, source_url, note)
 
@@ -507,9 +516,8 @@ def tracker_update_milestone(
         data = _merge(MilestoneIn, ms, given)
         if clear_end_date:
             data.end_date = None
-        since = _mark(db)
         editing.update_milestone(db, actor, ms.id, data)
-        return _result(db, since, ms.id)
+        return _result(actor, ms.id)
 
     return _act(ctx, run, source_url, note)
 
@@ -528,9 +536,8 @@ def tracker_delete_milestone(
     when a date merely moved."""
 
     def run(db: Session, actor: Actor) -> WriteResult:
-        since = _mark(db)
         editing.delete_milestone(db, actor, milestone_id)
-        return _result(db, since, milestone_id)
+        return _result(actor, milestone_id)
 
     return _act(ctx, run, source_url, reason)
 
@@ -538,14 +545,27 @@ def tracker_delete_milestone(
 # --------------------------------------------------------------------------
 # Undo
 # --------------------------------------------------------------------------
-@tool(EDIT)
+@tool(UNDO)
 def tracker_undo_change(ctx: Context, change_id: int, note: Note = "") -> WriteResult:
     """Revert one logged change. Refused if the record changed since: undo newer changes
-    first. Undoing an undo redoes it."""
+    first. Undoing an undo redoes it. Undoing an addition deletes it, so it needs a `note`
+    saying why, and is refused for a series or an edition."""
 
     def run(db: Session, actor: Actor) -> WriteResult:
+        change = db.get(Change, change_id)
+        # Undoing a create deletes the record: hold that to the rules on deleting.
+        if change is not None and change.action == "create" and change.undone_by is None:
+            if change.entity in ("series", "edition"):
+                raise ToolError(
+                    f"Undoing change {change_id} would delete {change.label}; only a person "
+                    "can delete a series or an edition (Admin → Recent changes)."
+                )
+            if len(note.strip()) < 3:
+                raise ToolError(
+                    f"Undoing change {change_id} deletes {change.label}: say why in `note`."
+                )
         new = editing.undo(db, actor, change_id)
-        return WriteResult(changed=True, id=new.entity_id, change=_change_out(new))
+        return _result(actor, new.entity_id)
 
     return _act(ctx, run, note=note)
 

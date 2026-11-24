@@ -29,8 +29,42 @@ jobs:
           SECRET_KEY: ci-secret
         run: pytest -q
 
+  # The tests don't run under opentelemetry-instrument, which the image always
+  # uses: start the image as production does and call it, with tracing off and on.
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: conference-tracker:smoke
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Start the image and call it
+        run: |
+          check() {
+            docker run -d --name ct -p 8000:8000 -e DATABASE_URL=sqlite:////tmp/ct.db \
+              -e SECRET_KEY=smoke "$@" conference-tracker:smoke
+            for i in $(seq 1 60); do curl -sf localhost:8000/healthz >/dev/null && break; sleep 1; done
+            for p in /api/me /api/series /api/series/eswc /auth/login; do
+              code=$(curl -s -o /dev/null -w '%{http_code}' "localhost:8000$p")
+              echo "$p $code"
+              case $code in 2*|3*) ;; *) docker logs ct; exit 1 ;; esac
+            done
+            code=$(curl -s -o /dev/null -w '%{http_code}' -X POST localhost:8000/mcp)
+            echo "/mcp without a token $code"
+            [ "$code" = 401 ] || { docker logs ct; exit 1; }
+            docker rm -f ct >/dev/null
+          }
+          check
+          check -e OTEL_SDK_DISABLED=false -e OTEL_TRACES_EXPORTER=console \
+            -e OTEL_METRICS_EXPORTER=none -e OTEL_LOGS_EXPORTER=none
+
   image:
-    needs: test
+    needs: [test, smoke]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:

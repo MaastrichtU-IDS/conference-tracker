@@ -185,8 +185,11 @@ claude.ai custom connector, choose no sign-in and set the same header.
 
 Rules on top of the REST API's: every add and update must cite `source_url`, an
 http(s) page the values came from; updates are partial (only the fields given
-change, so an AI never writes back stale copies of the rest); nothing deletes a
-series or an edition. Editions are named by id or label (`"ESWC 2027"`).
+change, so an AI never writes back stale copies of the rest, and a stored value
+written before today's rules is left alone unless it is the one being changed);
+nothing deletes a series or an edition, including undoing their creation (a
+person does that in the app); an undo that deletes a milestone needs a `note`.
+Only `POST` is served. Editions are named by id or label (`"ESWC 2027"`).
 Refusals (a clash, a stale undo, a bad link) come back as tool errors whose text
 says what to do. The server's instructions explain the series/edition model,
 AoE deadlines and the milestone names in use.

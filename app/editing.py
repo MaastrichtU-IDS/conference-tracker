@@ -1,6 +1,6 @@
 """Every write to series, editions and milestones, each one recorded in the change log.
 
-The REST endpoints and (later) the MCP server both edit through these
+The REST endpoints and the MCP server (app/mcp_server.py) both edit through these
 functions, so whatever the route, a write is checked the same way and lands in
 `changes` with who made it, how, and from what source.
 
@@ -11,6 +11,7 @@ later edit. Undoing produces a change of its own, so undoing that is a redo.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import typing
 from dataclasses import dataclass
@@ -47,6 +48,9 @@ class Actor:
     token: ApiToken | None = None
     source: str = ""  # where the new value was read, e.g. the CFP page
     note: str = ""
+    # What this actor's writes recorded, in order: a caller reports its own change
+    # from here rather than searching the log, where another writer may have been.
+    recorded: list[Change] = dataclasses.field(default_factory=list)
 
     @property
     def via(self) -> str:
@@ -168,6 +172,7 @@ def _record(
     )
     db.add(change)
     db.flush()
+    actor.recorded.append(change)
     return change
 
 
