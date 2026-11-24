@@ -4,17 +4,30 @@ from __future__ import annotations
 
 import datetime as dt
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
-from ..auth import current_user, require_admin, require_user
+from .. import editing
+from ..auth import (
+    aware,
+    current_token,
+    current_user,
+    hash_token,
+    new_token,
+    require_admin,
+    require_session_admin,
+    require_session_user,
+    require_user,
+)
 from ..config import Settings, get_settings
 from ..db import get_db
+from ..editing import Actor
 from ..editions import aoe_today, current_edition, edition_state
-from ..models import Conference, Milestone, Series, Star, Submission, User
+from ..models import ApiToken, Change, Conference, Milestone, Series, Star, Submission, User
 from ..schemas import (
     BootstrapOut,
+    ChangeOut,
     ConferenceOut,
     EditionDetail,
     EditionIn,
@@ -27,6 +40,9 @@ from ..schemas import (
     StarIn,
     SubmissionIn,
     SubmissionOut,
+    TokenCreated,
+    TokenIn,
+    TokenOut,
 )
 
 router = APIRouter(prefix="/api", tags=["api"])
@@ -84,20 +100,6 @@ def _find_series(db: Session, key: str) -> Series | None:
     )
 
 
-def _acronym_taken(db: Session, acronym: str, except_id: str | None = None) -> bool:
-    q = select(Series.id).where(func.lower(Series.acronym) == acronym.lower())
-    if except_id:
-        q = q.where(Series.id != except_id)
-    return db.scalar(q) is not None
-
-
-def _year_taken(db: Session, series_id: str, year: int, except_id: str | None = None) -> bool:
-    q = select(Conference.id).where(Conference.series_id == series_id, Conference.year == year)
-    if except_id:
-        q = q.where(Conference.id != except_id)
-    return db.scalar(q) is not None
-
-
 def _sub_out(s: Submission) -> SubmissionOut:
     return SubmissionOut(
         id=s.id,
@@ -133,9 +135,11 @@ def _all_submissions(db: Session):
     ).all()
 
 
-def _me_out(user: User | None, settings: Settings) -> MeOut:
+def _me_out(user: User | None, settings: Settings, request: Request) -> MeOut:
     if user is None:
         return MeOut(authenticated=False, auth_enabled=settings.auth_enabled)
+    # The calendar URL is a lasting credential of its own; a token doesn't get it.
+    feed = None if current_token(request) else f"{settings.base_url}/feeds/{user.feed_token}.ics"
     return MeOut(
         authenticated=True,
         auth_enabled=settings.auth_enabled,
@@ -143,20 +147,22 @@ def _me_out(user: User | None, settings: Settings) -> MeOut:
         email=user.email,
         name=user.name,
         is_admin=user.is_admin,
-        feed_url=f"{settings.base_url}/feeds/{user.feed_token}.ics",
+        feed_url=feed,
     )
 
 
 @router.get("/me", response_model=MeOut)
 def me(
+    request: Request,
     user: User | None = Depends(current_user),
     settings: Settings = Depends(get_settings),
 ) -> MeOut:
-    return _me_out(user, settings)
+    return _me_out(user, settings, request)
 
 
 @router.get("/bootstrap", response_model=BootstrapOut)
 def bootstrap(
+    request: Request,
     db: Session = Depends(get_db),
     user: User | None = Depends(current_user),
     settings: Settings = Depends(get_settings),
@@ -184,7 +190,7 @@ def bootstrap(
         milestones=[_ms_out(m) for m in mss],
         submissions=[_sub_out(s) for s in subs],
         stars=stars,
-        me=_me_out(user, settings),
+        me=_me_out(user, settings, request),
     )
 
 
@@ -305,7 +311,7 @@ def remove_star(
 @router.post("/feed-token/rotate")
 def rotate_feed_token(
     db: Session = Depends(get_db),
-    user: User = Depends(require_user),
+    user: User = Depends(require_session_user),
     settings: Settings = Depends(get_settings),
 ) -> dict:
     """Invalidate the old calendar URL and issue a new one."""
@@ -353,15 +359,29 @@ def get_series(key: str, db: Session = Depends(get_db)) -> SeriesDetail:
     return _series_detail(s, aoe_today())
 
 
+# Writes go through app/editing.py, which logs each one in `changes`. Any write
+# may carry ?source=<where the value was read> and ?note=<why>; both are logged.
+def editor(
+    request: Request,
+    source: str = Query("", max_length=1000, description="Where the new value comes from"),
+    note: str = Query("", max_length=2000, description="Why, for the change log"),
+    user: User = Depends(require_admin),
+) -> Actor:
+    return Actor(user=user, token=current_token(request), source=source, note=note)
+
+
+DELETED = {
+    "status_code": status.HTTP_204_NO_CONTENT,
+    "response_class": Response,
+    "response_model": None,
+}
+
+
 @router.post("/series", response_model=SeriesOut, status_code=status.HTTP_201_CREATED)
 def create_series(
-    payload: SeriesIn, db: Session = Depends(get_db), _: User = Depends(require_admin)
+    payload: SeriesIn, db: Session = Depends(get_db), actor: Actor = Depends(editor)
 ) -> SeriesOut:
-    if _acronym_taken(db, payload.acronym):
-        raise HTTPException(status.HTTP_409_CONFLICT, "A series with that acronym already exists")
-    s = Series(**payload.model_dump())
-    db.add(s)
-    db.commit()
+    s = editing.create_series(db, actor, payload)
     return _series_out(_find_series(db, s.id), aoe_today())
 
 
@@ -370,38 +390,17 @@ def update_series(
     series_id: str,
     payload: SeriesIn,
     db: Session = Depends(get_db),
-    _: User = Depends(require_admin),
+    actor: Actor = Depends(editor),
 ) -> SeriesOut:
-    s = db.get(Series, series_id)
-    if s is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such series")
-    if _acronym_taken(db, payload.acronym, except_id=series_id):
-        raise HTTPException(status.HTTP_409_CONFLICT, "A series with that acronym already exists")
-    for field, value in payload.model_dump().items():
-        setattr(s, field, value)
-    db.commit()
+    editing.update_series(db, actor, series_id, payload)
     return _series_out(_find_series(db, series_id), aoe_today())
 
 
-@router.delete(
-    "/series/{series_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-    response_class=Response,
-    response_model=None,
-)
+@router.delete("/series/{series_id}", **DELETED)
 def delete_series(
-    series_id: str, db: Session = Depends(get_db), _: User = Depends(require_admin)
+    series_id: str, db: Session = Depends(get_db), actor: Actor = Depends(editor)
 ) -> None:
-    s = db.get(Series, series_id)
-    if s is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such series")
-    if s.editions:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT, "Delete the series' editions first; this removes nothing else"
-        )
-    db.execute(delete(Star).where(Star.kind == "series", Star.target_id == series_id))
-    db.delete(s)
-    db.commit()
+    editing.delete_series(db, actor, series_id)
 
 
 @router.post(
@@ -413,19 +412,9 @@ def create_edition(
     series_id: str,
     payload: EditionIn,
     db: Session = Depends(get_db),
-    _: User = Depends(require_admin),
+    actor: Actor = Depends(editor),
 ) -> ConferenceOut:
-    if db.get(Series, series_id) is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such series")
-    if _year_taken(db, series_id, payload.year):
-        raise HTTPException(
-            status.HTTP_409_CONFLICT, "That series already has an edition that year"
-        )
-    conf = Conference(series_id=series_id, **payload.model_dump())
-    db.add(conf)
-    db.commit()
-    db.refresh(conf)
-    return _conf_out(conf)
+    return _conf_out(editing.create_edition(db, actor, series_id, payload))
 
 
 @router.put("/conferences/{conf_id}", response_model=ConferenceOut)
@@ -433,38 +422,18 @@ def update_conference(
     conf_id: str,
     payload: EditionIn,
     db: Session = Depends(get_db),
-    _: User = Depends(require_admin),
+    actor: Actor = Depends(editor),
 ) -> ConferenceOut:
     """Update one edition."""
-    conf = db.get(Conference, conf_id)
-    if conf is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such conference")
-    if _year_taken(db, conf.series_id, payload.year, except_id=conf_id):
-        raise HTTPException(
-            status.HTTP_409_CONFLICT, "That series already has an edition that year"
-        )
-    for field, value in payload.model_dump().items():
-        setattr(conf, field, value)
-    db.commit()
-    db.refresh(conf)
-    return _conf_out(conf)
+    return _conf_out(editing.update_edition(db, actor, conf_id, payload))
 
 
-@router.delete(
-    "/conferences/{conf_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-    response_class=Response,
-    response_model=None,
-)
+@router.delete("/conferences/{conf_id}", **DELETED)
 def delete_conference(
-    conf_id: str, db: Session = Depends(get_db), _: User = Depends(require_admin)
+    conf_id: str, db: Session = Depends(get_db), actor: Actor = Depends(editor)
 ) -> None:
     """Delete one edition and its milestones; submissions to it lose their venue."""
-    conf = db.get(Conference, conf_id)
-    if conf is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such conference")
-    db.delete(conf)
-    db.commit()
+    editing.delete_edition(db, actor, conf_id)
 
 
 @router.post(
@@ -476,16 +445,9 @@ def create_milestone(
     conf_id: str,
     payload: MilestoneIn,
     db: Session = Depends(get_db),
-    _: User = Depends(require_admin),
+    actor: Actor = Depends(editor),
 ) -> MilestoneOut:
-    conf = db.get(Conference, conf_id)
-    if conf is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such conference")
-    ms = Milestone(conference_id=conf_id, **payload.model_dump())
-    db.add(ms)
-    db.commit()
-    db.refresh(ms)
-    return _ms_out(ms)
+    return _ms_out(editing.create_milestone(db, actor, conf_id, payload))
 
 
 @router.put("/milestones/{ms_id}", response_model=MilestoneOut)
@@ -493,32 +455,133 @@ def update_milestone(
     ms_id: str,
     payload: MilestoneIn,
     db: Session = Depends(get_db),
-    _: User = Depends(require_admin),
+    actor: Actor = Depends(editor),
 ) -> MilestoneOut:
-    ms = db.get(Milestone, ms_id)
-    if ms is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such milestone")
-    for field, value in payload.model_dump().items():
-        setattr(ms, field, value)
-    db.commit()
-    db.refresh(ms)
-    return _ms_out(ms)
+    return _ms_out(editing.update_milestone(db, actor, ms_id, payload))
 
 
-@router.delete(
-    "/milestones/{ms_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-    response_class=Response,
-    response_model=None,
-)
+@router.delete("/milestones/{ms_id}", **DELETED)
 def delete_milestone(
-    ms_id: str, db: Session = Depends(get_db), _: User = Depends(require_admin)
+    ms_id: str, db: Session = Depends(get_db), actor: Actor = Depends(editor)
 ) -> None:
-    ms = db.get(Milestone, ms_id)
-    if ms is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such milestone")
-    db.delete(ms)
+    editing.delete_milestone(db, actor, ms_id)
+
+
+# --------------------------------------------------------------------------
+# Change log and undo — admins (in the app or with a token).
+# --------------------------------------------------------------------------
+def _change_out(c: Change) -> ChangeOut:
+    return ChangeOut(
+        id=c.id,
+        at=aware(c.at),
+        actor=c.actor_name,
+        via=c.via,
+        token=c.token_name,
+        entity=c.entity,
+        entity_id=c.entity_id,
+        series_id=c.series_id,
+        action=c.action,
+        label=c.label,
+        fields=editing.changed_fields(c.before, c.after),
+        before=c.before,
+        after=c.after,
+        source=c.source,
+        note=c.note,
+        undo_of=c.undo_of,
+        undone_by=c.undone_by,
+    )
+
+
+@router.get("/changes", response_model=list[ChangeOut])
+def list_changes(
+    series: str = Query("", description="Series id or acronym: only changes to it"),
+    entity_id: str = Query("", description="Only changes to this series, edition or milestone"),
+    before: int | None = Query(None, description="Page: changes older than this id"),
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+) -> list[ChangeOut]:
+    """Newest first."""
+    q = select(Change).order_by(Change.id.desc()).limit(limit)
+    if series:
+        found = db.scalar(
+            select(Series.id).where(
+                or_(Series.id == series, func.lower(Series.acronym) == series.lower())
+            )
+        )
+        q = q.where(Change.series_id == (found or series))
+    if entity_id:
+        q = q.where(Change.entity_id == entity_id)
+    if before is not None:
+        q = q.where(Change.id < before)
+    return [_change_out(c) for c in db.scalars(q)]
+
+
+@router.post("/changes/{change_id}/undo", response_model=ChangeOut)
+def undo_change(
+    change_id: int, db: Session = Depends(get_db), actor: Actor = Depends(editor)
+) -> ChangeOut:
+    """Revert one change, if nothing has touched that record since. Returns the new change."""
+    return _change_out(editing.undo(db, actor, change_id))
+
+
+# --------------------------------------------------------------------------
+# API tokens — managed by a signed-in admin, never with a token.
+# --------------------------------------------------------------------------
+def _token_out(t: ApiToken, cls=TokenOut, **extra):
+    return cls(
+        id=t.id,
+        name=t.name,
+        prefix=t.prefix,
+        owner=t.user.name or t.user.email if t.user else "",
+        created_at=aware(t.created_at),
+        expires_at=aware(t.expires_at),
+        last_used_at=aware(t.last_used_at),
+        revoked_at=aware(t.revoked_at),
+        **extra,
+    )
+
+
+@router.get("/tokens", response_model=list[TokenOut])
+def list_tokens(
+    db: Session = Depends(get_db), _: User = Depends(require_session_admin)
+) -> list[TokenOut]:
+    """Every admin's tokens, so anyone of them can revoke a token that should go."""
+    tokens = db.scalars(select(ApiToken).order_by(ApiToken.created_at.desc()))
+    return [_token_out(t) for t in tokens]
+
+
+@router.post("/tokens", response_model=TokenCreated, status_code=status.HTTP_201_CREATED)
+def create_token(
+    payload: TokenIn, db: Session = Depends(get_db), user: User = Depends(require_session_admin)
+) -> TokenCreated:
+    """A token acting as you. Its value is in this response only."""
+    raw = new_token()
+    now = dt.datetime.now(dt.UTC)
+    t = ApiToken(
+        user_id=user.id,
+        name=payload.name.strip(),
+        prefix=raw[:10],
+        token_hash=hash_token(raw),
+        created_at=now,
+        expires_at=now + dt.timedelta(days=payload.expires_in_days),
+    )
+    db.add(t)
     db.commit()
+    db.refresh(t)
+    return _token_out(t, TokenCreated, token=raw)
+
+
+@router.delete("/tokens/{token_id}", **DELETED)
+def revoke_token(
+    token_id: str, db: Session = Depends(get_db), _: User = Depends(require_session_admin)
+) -> None:
+    t = db.get(ApiToken, token_id)
+    if t is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such token")
+    if t.revoked_at is None:
+        t.revoked_at = dt.datetime.now(dt.UTC)
+        db.commit()
 
 
 @router.get("/healthz")

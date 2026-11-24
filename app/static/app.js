@@ -46,7 +46,11 @@ async function api(path, options = {}) {
   if (res.status === 401) { showSignin(); throw new Error("unauthenticated"); }
   if (!res.ok) {
     let detail = res.statusText;
-    try { detail = (await res.json()).detail || detail; } catch (e) { /* non-JSON error */ }
+    try {
+      const d = (await res.json()).detail;
+      // 422s list each invalid field: show "url: String should match pattern …"
+      detail = Array.isArray(d) ? d.map(x => `${(x.loc || []).slice(-1)[0]}: ${x.msg}`).join("; ") : (d || detail);
+    } catch (e) { /* non-JSON error */ }
     throw new Error(detail);
   }
   return res.status === 204 ? null : res.json();
@@ -261,7 +265,7 @@ function confCard({ s, c }) {
   const ev = `<div class="row"><div class="k">Event</div><div class="vv">${c.start_date ? fmtShort(c.start_date) + (c.end_date ? " – " + fmt(c.end_date) : "") : "—"}</div><div class="c">${c.start_date ? rel(c.start_date) : ""}</div></div>`;
   const mine = SUBS.filter(x => x.conference_id === c.id);
   const ms = MSR.filter(m => m.conference_id === c.id && F.kinds.has(m._k) && timeOK(m.date));
-  const page = c.url || s.homepage;
+  const page = [c.url, s.homepage].find(safeUrl) || "";
   return `<article class="card">
     <div class="hd"><div class="t">
       <div class="venue">${esc(c.label)}</div>
@@ -534,6 +538,7 @@ function renderAdmin() {
       <div class="rowbtns" style="margin:10px 0 6px">
         <button class="btn sm saveser">Save series</button>
         <button class="btn ghost sm added">+ Add edition</button>
+        <button class="btn ghost sm histser">History</button>
         <button class="btn danger sm delser">Delete series</button>
       </div>
       ${eds.map(editionPanel).join("")}
@@ -558,6 +563,7 @@ function wireAdmin() {
     const sid = det.dataset.sid, s = SERIES_BY_ID.get(sid);
     det.querySelector(".saveser").onclick = () =>
       adminDo(api(`/api/series/${sid}`, { method: "PUT", body: fieldsOf(det.querySelector(".sfields")) }), "Series saved");
+    det.querySelector(".histser").onclick = () => { $("#chseries").value = sid; showPane("changes"); };
     det.querySelector(".delser").onclick = () => {
       if (!window.confirm(`Delete the series ${s.acronym}? Only possible once it has no editions.`)) return;
       adminDo(api(`/api/series/${sid}`, { method: "DELETE" }), "Series deleted");
@@ -593,6 +599,96 @@ function wireAdmin() {
   });
 }
 
+/* ---------- admin: change log (with undo) and API tokens ---------- */
+let CHANGES = [], CH_MORE = false;
+const CH_PAGE = 50;
+const ACTION = { create: "added", update: "changed", delete: "deleted" };
+const dstr = iso => { const d = new Date(iso); return `${d.getDate()} ${MON[d.getMonth()]} ${d.getFullYear()}`; };
+const tstr = iso => new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+const shortVal = v => {
+  if (v === null || v === undefined || v === "") return "∅";
+  const t = String(v); return t.length > 90 ? t.slice(0, 87) + "…" : t;
+};
+const safeUrl = u => /^https?:\/\//i.test(u || "");
+function changeDiff(c) {
+  if (c.action === "update")
+    return c.fields.map(f => `${esc(f)}: <del>${esc(shortVal(c.before[f]))}</del> → <ins>${esc(shortVal(c.after[f]))}</ins>`).join("<br>");
+  const snap = c.after || c.before || {};
+  if (c.entity === "milestone") return esc(snap.end_date ? `${snap.date} – ${snap.end_date}` : snap.date);
+  if (c.entity === "edition") {
+    const n = (snap.milestones || []).length;
+    return n ? `with ${n} milestone${n > 1 ? "s" : ""}` : "";
+  }
+  return "";
+}
+function changeRow(c) {
+  const via = c.via === "token" ? `API token “${esc(c.token)}”` : "the app";
+  const src = !c.source ? "" : safeUrl(c.source)
+    ? ` · <a href="${esc(c.source)}" target="_blank" rel="noopener noreferrer">source</a>`
+    : ` · source: ${esc(c.source)}`;
+  const tags = (c.undo_of ? `<span class="tag">undo of #${c.undo_of}</span>` : "")
+    + (c.undone_by ? `<span class="tag">undone by #${c.undone_by}</span>` : "");
+  const diff = changeDiff(c);
+  return `<div class="chrow ${c.undone_by ? "undone" : ""}" data-ch="${c.id}">
+    <div class="when">${dstr(c.at)}<br>${tstr(c.at)}</div>
+    <div><div class="what"><span class="act">${ACTION[c.action] || esc(c.action)} ${esc(c.entity)}</span><b>${esc(c.label)}</b>${tags}</div>
+      ${diff ? `<div class="diff">${diff}</div>` : ""}
+      <div class="who">#${c.id} · ${esc(c.actor)} via ${via}${src}${c.note ? " · " + esc(c.note) : ""}</div></div>
+    <div>${c.undone_by ? "" : '<button class="btn ghost sm chundo">Undo</button>'}</div></div>`;
+}
+async function loadChanges(more) {
+  const params = new URLSearchParams({ limit: String(CH_PAGE) });
+  if ($("#chseries").value) params.set("series", $("#chseries").value);
+  if (more && CHANGES.length) params.set("before", String(CHANGES[CHANGES.length - 1].id));
+  const page = await api("/api/changes?" + params);
+  CHANGES = more ? CHANGES.concat(page) : page;
+  CH_MORE = page.length === CH_PAGE;
+  renderChanges();
+}
+function renderChanges() {
+  $("#chlist").innerHTML = CHANGES.length ? CHANGES.map(changeRow).join("")
+    : '<div class="chempty">No changes recorded yet.</div>';
+  $("#chmore").classList.toggle("hidden", !CH_MORE);
+  $$("#chlist .chundo").forEach(b => b.onclick = async () => {
+    const id = b.closest("[data-ch]").dataset.ch;
+    try {
+      await api(`/api/changes/${id}/undo`, { method: "POST" });
+      await reload(); await loadChanges(false); flash("Undone");
+    } catch (err) { flash("Could not undo: " + err.message); }
+  });
+}
+function fillChangeSeries() {
+  const keep = $("#chseries").value;
+  $("#chseries").innerHTML = '<option value="">All series</option>'
+    + SERIES.map(s => `<option value="${esc(s.id)}">${esc(s.acronym)}</option>`).join("");
+  $("#chseries").value = SERIES_BY_ID.has(keep) ? keep : "";
+}
+async function loadTokens() {
+  const list = await api("/api/tokens");
+  const now = Date.now();
+  $("#tklist").innerHTML = !list.length ? '<div class="chempty">No tokens yet.</div>'
+    : `<table class="tktable"><thead><tr><th>Name</th><th>Owner</th><th class="opt">Token</th><th class="opt">Created</th><th>Expires</th><th class="opt">Last used</th><th></th></tr></thead><tbody>
+      ${list.map(t => {
+        const off = t.revoked_at ? "revoked" : (new Date(t.expires_at).getTime() < now ? "expired" : "");
+        return `<tr class="${off ? "off" : ""}" data-tk="${esc(t.id)}"><td>${esc(t.name)}</td><td>${esc(t.owner)}</td>
+          <td class="opt"><code>${esc(t.prefix)}…</code></td><td class="opt">${dstr(t.created_at)}</td>
+          <td>${off || dstr(t.expires_at)}</td><td class="opt">${t.last_used_at ? dstr(t.last_used_at) : "never"}</td>
+          <td>${off ? "" : '<button class="btn danger sm tkrevoke">Revoke</button>'}</td></tr>`;
+      }).join("")}</tbody></table>`;
+  $$("#tklist .tkrevoke").forEach(b => b.onclick = async () => {
+    if (!window.confirm("Revoke this token? Anything using it stops working immediately.")) return;
+    try { await api(`/api/tokens/${b.closest("[data-tk]").dataset.tk}`, { method: "DELETE" }); await loadTokens(); flash("Token revoked"); }
+    catch (err) { flash("Could not revoke: " + err.message); }
+  });
+}
+function showPane(p) {
+  $$("[data-a]").forEach(x => x.classList.toggle("on", x.dataset.a === p));
+  $$(".apane").forEach(x => x.classList.toggle("hidden", x.id !== "a-" + p));
+  const fail = err => flash("Could not load: " + err.message);
+  if (p === "changes") loadChanges(false).catch(fail);
+  if (p === "tokens") loadTokens().catch(fail);
+}
+
 /* ---------- render ---------- */
 function renderAll() {
   renderFilterBar(); renderDeadlines(); renderConfs();
@@ -612,7 +708,7 @@ function indexData(data) {
   STARS = { series: new Set(data.stars.series || []), milestone: new Set(data.stars.milestone || []) };
   ME = data.me;
 }
-async function reload() { indexData(await api("/api/bootstrap")); fillVenuePicker(); renderAll(); }
+async function reload() { indexData(await api("/api/bootstrap")); fillVenuePicker(); fillChangeSeries(); renderAll(); }
 function fillVenuePicker() {
   const keep = $("#f-venue").value;
   const eds = CONFS.slice().sort((a, b) => a.venue.localeCompare(b.venue) || b.year - a.year);
@@ -636,7 +732,7 @@ async function start() {
   $("#feedurl").textContent = ME.feed_url || "—";
   $("#allfeedurl").textContent = location.origin + "/feeds/all.ics";
 
-  fillVenuePicker();
+  fillVenuePicker(); fillChangeSeries();
   $("#f-status").innerHTML = STATUSES.map(s => `<option>${s}</option>`).join("");
   $("#projlist").innerHTML = PROJECTS.map(p => `<option value="${esc(p)}">`).join("");
 
@@ -685,5 +781,19 @@ $("#newconf").onclick = async () => {
     OPEN.add("s:" + s.id); await reload(); flash("Series created — add its first edition");
   } catch (err) { flash("Could not create: " + err.message); }
 };
+
+$$("[data-a]").forEach(b => b.onclick = () => showPane(b.dataset.a));
+$("#chseries").onchange = () => loadChanges(false).catch(err => flash("Could not load: " + err.message));
+$("#chmore").onclick = () => loadChanges(true).catch(err => flash("Could not load: " + err.message));
+$("#tkcreate").onclick = async () => {
+  const name = $("#tkname").value.trim();
+  if (!name) { flash("Say what the token is for"); return; }
+  try {
+    const t = await api("/api/tokens", { method: "POST", body: { name, expires_in_days: +$("#tkdays").value } });
+    $("#tkvalue").textContent = t.token; $("#tknew").classList.remove("hidden");
+    $("#tkname").value = ""; await loadTokens();
+  } catch (err) { flash("Could not create: " + err.message); }
+};
+$("#tkcopy").onclick = () => copyText($("#tkvalue").textContent);
 
 start();
