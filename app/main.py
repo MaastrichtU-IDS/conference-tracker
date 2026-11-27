@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -21,6 +22,7 @@ from .migrate import migrate
 from .routers.api import router as api_router
 from .routers.feeds import router as feeds_router
 from .seed import seed_if_empty
+from .version import VERSION, footer_html
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("conference-tracker")
@@ -67,14 +69,38 @@ app.include_router(feeds_router)
 app.include_router(auth_router)
 # The MCP server (app/mcp_server.py): admin API tokens only, checked before the SDK sees a byte.
 app.add_route("/mcp", mcp_gate, include_in_schema=False)
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+class _Static(StaticFiles):
+    """The page links its script and stylesheet as ?v=<content hash>, so such a URL
+    never changes meaning and can be kept for good; anything else is rechecked."""
+
+    async def get_response(self, path, scope):
+        res = await super().get_response(path, scope)
+        if res.status_code in (200, 304):
+            pinned = b"v=" in scope.get("query_string", b"")
+            res.headers["Cache-Control"] = (
+                "public, max-age=31536000, immutable" if pinned else "no-cache"
+            )
+        return res
+
+
+app.mount("/static", _Static(directory=STATIC_DIR), name="static")
+ASSETS = ("app.js", "styles.css")
 
 
 @app.get("/healthz", include_in_schema=False)
 def healthz() -> dict:
-    return {"status": "ok"}
+    return {"status": "ok", "version": VERSION}
 
 
 @app.get("/", include_in_schema=False)
-def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+def index() -> HTMLResponse:
+    """The page, with its assets pinned to their content so a release is picked up on
+    the next load (browsers otherwise kept serving the previous app.js for days)."""
+    page = (STATIC_DIR / "index.html").read_text()
+    for name in ASSETS:
+        tag = hashlib.sha256((STATIC_DIR / name).read_bytes()).hexdigest()[:12]
+        page = page.replace(f'"/static/{name}"', f'"/static/{name}?v={tag}"')
+    page = page.replace("<!--version-->", footer_html())
+    return HTMLResponse(page, headers={"Cache-Control": "no-cache"})

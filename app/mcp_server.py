@@ -44,6 +44,7 @@ from .editions import aoe_today
 from .models import ApiToken, Change, Conference, Series
 from .routers.api import _change_out, _find_series, _series_detail, search_series
 from .schemas import ChangeOut, EditionIn, MilestoneIn, SeriesDetail, SeriesIn, SeriesOut
+from .version import VERSION
 
 INSTRUCTIONS = """\
 Conference Tracker: submission deadlines for the conferences a research group targets.
@@ -75,7 +76,7 @@ Rules
 - You cannot delete series or editions; ask a person.
 """
 
-mcp = MCPServer("conference_tracker_mcp", instructions=INSTRUCTIONS)
+mcp = MCPServer("conference_tracker_mcp", version=VERSION, instructions=INSTRUCTIONS)
 
 
 def tool(annotations: ToolAnnotations):

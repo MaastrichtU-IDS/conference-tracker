@@ -2,6 +2,7 @@
 
 import datetime as dt
 
+import pytest
 from icalendar import Calendar
 
 
@@ -214,8 +215,45 @@ def test_bootstrap_lists_series_with_their_current_edition(client):
 
 
 def test_healthz(client):
-    assert client.get("/healthz").json()["status"] == "ok"
-    assert client.get("/api/healthz").json()["status"] == "ok"
+    assert client.get("/healthz").json() == {"status": "ok", "version": "dev"}
+    assert client.get("/api/healthz").json()["version"] == "dev"
+
+
+def test_the_page_shows_the_version_and_pins_its_assets(client):
+    import re
+
+    res = client.get("/")
+    assert res.headers["cache-control"] == "no-cache"
+    assert 'class="foot">Conference Tracker dev ·' in res.text
+    js = re.search(r'src="(/static/app\.js\?v=[0-9a-f]{12})"', res.text).group(1)
+    css = re.search(r'href="(/static/styles\.css\?v=[0-9a-f]{12})"', res.text).group(1)
+    assert "immutable" in client.get(js).headers["cache-control"]
+    assert "immutable" in client.get(css).headers["cache-control"]
+    assert client.get("/static/app.js").headers["cache-control"] == "no-cache"
+
+
+@pytest.mark.parametrize(
+    ("version", "commit", "label", "href"),
+    [
+        ("0.4.1", "1a2b3c4d5e", "v0.4.1", "/tree/v0.4.1"),
+        ("main", "1a2b3c4d5e", "main · 1a2b3c4", "/commit/1a2b3c4d5e"),
+        ("", "", "dev", None),
+    ],
+)
+def test_version_label(monkeypatch, version, commit, label, href):
+    import importlib
+
+    import app.version as v
+
+    monkeypatch.setenv("APP_VERSION", version)
+    monkeypatch.setenv("APP_COMMIT", commit)
+    importlib.reload(v)
+    try:
+        assert v.label() == label
+        assert (v.link() or "").endswith(href or "") and (v.link() is None) == (href is None)
+    finally:
+        monkeypatch.undo()
+        importlib.reload(v)
 
 
 def test_initdb_entrypoint_is_idempotent(tmp_path, monkeypatch):
