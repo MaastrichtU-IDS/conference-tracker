@@ -791,9 +791,11 @@ $("#tkcreate").onclick = async () => {
   try {
     const t = await api("/api/tokens", { method: "POST", body: { name, expires_in_days: +$("#tkdays").value } });
     $("#tkvalue").textContent = t.token; $("#tknew").classList.remove("hidden");
+    $("#tkmcp").textContent = `claude mcp add --transport http conference-tracker ${location.origin}/mcp --header "Authorization: Bearer ${t.token}"`;
     $("#tkname").value = ""; await loadTokens();
   } catch (err) { flash("Could not create: " + err.message); }
 };
 $("#tkcopy").onclick = () => copyText($("#tkvalue").textContent);
+$("#tkmcpcopy").onclick = () => copyText($("#tkmcp").textContent);
 
 start();

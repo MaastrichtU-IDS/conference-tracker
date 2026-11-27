@@ -22,13 +22,18 @@ def _web_url(value: str) -> str:
 WebUrl = Annotated[str, Field(max_length=500), AfterValidator(_web_url)]
 
 
+def _upto(n: int):
+    """Text that fits its column (app/models.py): too long is refused on the way in."""
+    return Annotated[str, Field(max_length=n)]
+
+
 class MilestoneIn(BaseModel):
     date: dt.date
     end_date: dt.date | None = None
-    track: str = ""
-    milestone: str = ""
-    time_basis: str = ""
-    status: str = ""
+    track: _upto(250) = ""
+    milestone: _upto(250) = ""
+    time_basis: _upto(120) = ""
+    status: _upto(200) = ""
     notes: str = ""
 
 
@@ -46,7 +51,7 @@ class SeriesIn(BaseModel):
     """A recurring conference: what stays the same from one year to the next."""
 
     acronym: str = Field(min_length=1, max_length=80, pattern=r"^\S(.*\S)?$")
-    name: str = ""
+    name: _upto(400) = ""
     homepage: WebUrl = ""
     emphasis: str = ""
     fit: str = ""
@@ -71,12 +76,12 @@ class EditionIn(BaseModel):
     """One year of a series."""
 
     year: int = Field(ge=1950, le=2100)
-    location: str = ""
-    site_key: str | None = None
+    location: _upto(200) = ""
+    site_key: _upto(120) | None = None
     url: WebUrl = ""
-    status: str = ""
+    status: _upto(200) = ""
     notes: str = ""
-    source: str = ""
+    source: _upto(200) = ""
     abstract_date: dt.date | None = None
     paper_date: dt.date | None = None
     notify_date: dt.date | None = None
@@ -110,11 +115,11 @@ class SeriesDetail(SeriesOut):
 class SubmissionIn(BaseModel):
     title: str = Field(min_length=1, max_length=400)
     conference_id: str | None = None
-    track: str = ""
-    lead: str = ""
-    coauthors: str = ""
-    status: str = "Idea"
-    project: str = ""
+    track: _upto(200) = ""
+    lead: _upto(250) = ""
+    coauthors: _upto(600) = ""
+    status: _upto(60) = "Idea"
+    project: _upto(120) = ""
     abstract: str = ""
     notes: str = ""
     links: list[str] = Field(default_factory=list)

@@ -151,7 +151,10 @@ def _bearer(request: Request) -> str | None:
 def _token_user(db: Session, raw: str) -> tuple[User, ApiToken]:
     tok = db.scalar(select(ApiToken).where(ApiToken.token_hash == hash_token(raw))) if raw else None
     now = dt.datetime.now(dt.UTC)
-    if tok is None or tok.revoked_at is not None or aware(tok.expires_at) <= now:
+    # A token minted in dev mode belongs to the synthetic dev user. It must not
+    # outlive dev mode: once sign-in is configured, it is refused like any bad token.
+    dev_leftover = tok is not None and get_settings().auth_enabled and tok.user.subject == "dev"
+    if tok is None or tok.revoked_at is not None or aware(tok.expires_at) <= now or dev_leftover:
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED,
             "Invalid, expired or revoked API token",
