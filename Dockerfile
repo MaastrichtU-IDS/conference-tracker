@@ -22,6 +22,13 @@ RUN pip install --no-cache-dir -r requirements.txt \
 COPY app ./app
 COPY seed ./seed
 
+# Shown in the page footer and /healthz (app/version.py). Last, so a new version
+# reuses every layer above.
+ARG APP_VERSION=dev
+ARG APP_COMMIT=
+ENV APP_VERSION=$APP_VERSION \
+    APP_COMMIT=$APP_COMMIT
+
 # Run unprivileged; the image carries no writable state.
 RUN useradd --system --uid 10001 --create-home tracker \
     && chown -R tracker:tracker /app

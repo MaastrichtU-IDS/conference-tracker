@@ -44,6 +44,7 @@ from ..schemas import (
     TokenIn,
     TokenOut,
 )
+from ..version import VERSION
 
 router = APIRouter(prefix="/api", tags=["api"])
 
@@ -587,4 +588,4 @@ def revoke_token(
 @router.get("/healthz")
 def healthz(db: Session = Depends(get_db)) -> dict:
     db.execute(select(1))
-    return {"status": "ok", "time": dt.datetime.now(dt.UTC).isoformat()}
+    return {"status": "ok", "version": VERSION, "time": dt.datetime.now(dt.UTC).isoformat()}
